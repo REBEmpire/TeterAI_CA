@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from ai_engine.gcp import GCPIntegration
@@ -48,6 +48,16 @@ _audit = AuditLogger(_gcp)
 
 def _db():
     return _gcp.firestore_client
+
+
+def _get_drive():
+    """Lazy singleton for DriveService; returns None if Drive is not configured."""
+    try:
+        from integrations.drive.service import DriveService
+        return DriveService()
+    except Exception as e:
+        logger.warning(f"DriveService unavailable: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -194,22 +204,58 @@ def approve_task(
     task_data = task.to_dict()
     original_draft = task_data.get("draft_content", "")
     edits_made = body.edited_draft is not None and body.edited_draft != original_draft
+    final_draft = body.edited_draft if edits_made else original_draft
 
     action = HumanReviewAction.EDITED_AND_APPROVED if edits_made else HumanReviewAction.APPROVED
 
+    now = datetime.now(timezone.utc)
     update: dict[str, Any] = {
         "status": "APPROVED",
         "approved_by": current_user.uid,
-        "approved_at": datetime.now(timezone.utc).isoformat(),
+        "approved_at": now.isoformat(),
     }
     if edits_made:
-        update["draft_content"] = body.edited_draft
+        update["draft_content"] = final_draft
         update["draft_edited"] = True
 
     _push_status_history(task_data, "APPROVED", f"Human review: {action.value}", current_user.uid)
     update["status_history"] = task_data.get("status_history", [])
-
     task_ref.update(update)
+
+    # --- Delivery: file the approved draft to Drive and transition to DELIVERED ---
+    delivery_triggered = False
+    final_drive_path = None
+    drive = _get_drive()
+    if drive and final_draft:
+        project_id = task_data.get("project_id") or task_data.get("project_number")
+        doc_number = task_data.get("document_number", "RFI-???")
+        doc_type = task_data.get("document_type", "RFI")
+        dest_folder_key = "02 - Construction/RFIs" if doc_type == "RFI" else "04 - Agent Workspace/Thought Chains"
+        try:
+            folder_id = drive.get_folder_id(project_id, dest_folder_key) if project_id else None
+            if folder_id:
+                filename = f"{doc_number}_approved_response.md"
+                drive_file_id = drive.upload_file(
+                    folder_id=folder_id,
+                    filename=filename,
+                    content=final_draft.encode("utf-8"),
+                    mime_type="text/markdown",
+                )
+                final_drive_path = f"{dest_folder_key}/{filename}"
+                delivery_triggered = True
+                logger.info(f"[{task_id}] Approved draft filed to Drive: {drive_file_id}")
+            else:
+                logger.warning(f"[{task_id}] Drive folder '{dest_folder_key}' not found for project '{project_id}' — skipping file delivery.")
+        except Exception as e:
+            logger.error(f"[{task_id}] Drive delivery failed: {e}")
+
+    # Transition to DELIVERED
+    delivered_update: dict[str, Any] = {"status": "DELIVERED", "delivered_at": datetime.now(timezone.utc).isoformat()}
+    if final_drive_path:
+        delivered_update["final_drive_path"] = final_drive_path
+    _push_status_history(task_data, "DELIVERED", "Delivered after approval.", current_user.uid)
+    delivered_update["status_history"] = task_data.get("status_history", [])
+    task_ref.update(delivered_update)
 
     _audit.log(HumanReviewLog(
         task_id=task_id,
@@ -220,10 +266,10 @@ def approve_task(
         edits_made=edits_made,
         edit_summary="Reviewer edited draft before approval." if edits_made else None,
         duration_seconds=0,
-        delivery_triggered=False,
+        delivery_triggered=delivery_triggered,
     ))
 
-    return {"status": "APPROVED", "task_id": task_id}
+    return {"status": "DELIVERED", "task_id": task_id, "delivery_triggered": delivery_triggered}
 
 
 @router.post("/tasks/{task_id}/reject", tags=["tasks"])
@@ -377,6 +423,27 @@ def get_source(
         "referenced_specs": data.get("referenced_specs", []),
         "referenced_drawings": data.get("referenced_drawings", []),
     }
+
+
+@router.get("/tasks/{task_id}/source/files/{file_id}", tags=["tasks"])
+def get_source_file(
+    task_id: str,
+    file_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Proxy Drive file bytes to the browser (used by SplitViewer iframes).
+    The file_id is a Google Drive file ID stored in task.attachments[].drive_file_id.
+    """
+    drive = _get_drive()
+    if drive is None:
+        raise HTTPException(status_code=503, detail="Drive service unavailable.")
+    try:
+        content, mime_type = drive.download_file(file_id)
+    except Exception as e:
+        logger.error(f"Drive download failed for file {file_id}: {e}")
+        raise HTTPException(status_code=404, detail="File not found in Drive.")
+    return Response(content=content, media_type=mime_type)
 
 
 # ---------------------------------------------------------------------------

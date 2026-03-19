@@ -82,6 +82,17 @@ class DispatcherAgent:
                 "final_drive_path": None,
                 "error_message": None,
                 "correction_captured": False,
+                # Source data for SplitViewer
+                "sender_name": ingest.get("sender_name", ""),
+                "subject": ingest.get("subject", ""),
+                "source_email": {
+                    "from": f"{ingest.get('sender_name', '')} <{ingest.get('sender_email', '')}>".strip(),
+                    "subject": ingest.get("subject", ""),
+                    "date": ingest.get("received_at", ""),
+                    "body": ingest.get("body_text", ""),
+                },
+                # attachments: list of {filename, mime_type, size_bytes, drive_file_id}
+                "attachments": ingest.get("attachment_metadata", []),
             }
 
             try:

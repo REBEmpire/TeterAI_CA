@@ -139,7 +139,7 @@ class RFIAgent:
             self._update_rfi_log(db, project_id, rfi_number_internal, extraction, task_id, "ESCALATED")
         else:
             final_status = "STAGED_FOR_REVIEW"
-            draft_path = self._save_draft(db, task_id, draft)
+            draft_path = self._save_draft(db, task_id, draft, project_id=project_id)
             self._update_rfi_log(db, project_id, rfi_number_internal, extraction, task_id, "STAGED")
 
         # Transition task to final status
@@ -241,14 +241,16 @@ class RFIAgent:
             logger.warning(f"RFI counter update failed for project {project_id}: {e}")
             return f"RFI-{uuid.uuid4().hex[:4].upper()}"
 
-    def _save_draft(self, db, task_id: str, draft) -> str:
-        """Phase 0 stub: persist draft to Firestore thought_chains. Drive path returned for task record."""
+    def _save_draft(self, db, task_id: str, draft, project_id: str = "") -> str:
+        """Persist draft to Firestore thought_chains and upload to Drive Agent Workspace."""
         content = (
             f"{draft.header}\n\n"
             f"RESPONSE:\n{draft.response_text}\n\n"
             f"REFERENCES:\n" + "\n".join(f"- {r}" for r in draft.references) +
             "\n\n[CA Staff Signature Block Placeholder]"
         )
+
+        # 1. Always write to Firestore (UI reads from here)
         try:
             db.collection("thought_chains").document(task_id).set(
                 {
@@ -262,8 +264,27 @@ class RFIAgent:
             )
         except Exception as e:
             logger.warning(f"[{task_id}] Could not save draft to Firestore: {e}")
-        # Phase 0 stub path — real Drive path set once Drive integration lands
-        return f"04 - Agent Workspace/Thought Chains/{task_id}/draft_rfi_response.md"
+
+        # 2. Also upload to Drive Agent Workspace
+        drive_path = f"04 - Agent Workspace/Thought Chains/{task_id}/draft_rfi_response.md"
+        try:
+            from integrations.drive.service import DriveService
+            drive = DriveService()
+            folder_id = drive.get_folder_id(project_id, "04 - Agent Workspace/Thought Chains") if project_id else None
+            if folder_id:
+                drive.upload_file(
+                    folder_id=folder_id,
+                    filename=f"{task_id}_draft_rfi_response.md",
+                    content=content.encode("utf-8"),
+                    mime_type="text/markdown",
+                )
+                logger.info(f"[{task_id}] Draft uploaded to Drive Agent Workspace.")
+            else:
+                logger.info(f"[{task_id}] Drive folder not found for project '{project_id}' — draft in Firestore only.")
+        except Exception as e:
+            logger.warning(f"[{task_id}] Drive draft upload failed (Firestore fallback active): {e}")
+
+        return drive_path
 
     def _update_rfi_log(
         self, db, project_id: str, rfi_number_internal: str,

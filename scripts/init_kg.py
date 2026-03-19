@@ -158,13 +158,37 @@ def init_kg():
         # Spec Sections
         specs = [
             {
+                "csi": "01", "num": "01 00 00", "title": "General Requirements",
+                "content": "General administrative and procedural requirements for the project including project meetings, submittals, quality control, temporary facilities, and closeout procedures."
+            },
+            {
                 "csi": "03", "num": "03 30 00", "title": "Cast-in-Place Concrete",
-                "content": "This section covers all cast-in-place concrete work, including formwork, reinforcement, concrete mixture proportions, and placement procedures. Slump requirements must be strictly adhered to."
+                "content": "This section covers all cast-in-place concrete work, including formwork, reinforcement, concrete mixture proportions, and placement procedures. Slump requirements must be strictly adhered to per ACI 318."
+            },
+            {
+                "csi": "05", "num": "05 12 00", "title": "Structural Steel Framing",
+                "content": "Requirements for structural steel framing including material specifications (ASTM A992), connection design, fabrication, and erection tolerances per AISC standards."
+            },
+            {
+                "csi": "07", "num": "07 92 00", "title": "Joint Sealants",
+                "content": "Requirements for joint sealants including materials, preparation, application, and curing. Sealants must be compatible with adjacent materials and meet specified movement capabilities."
+            },
+            {
+                "csi": "08", "num": "08 11 13", "title": "Hollow Metal Doors and Frames",
+                "content": "Requirements for hollow metal doors and frames including material gauge, hardware preparation, fire ratings, and installation tolerances per SDI standards."
+            },
+            {
+                "csi": "09", "num": "09 29 00", "title": "Gypsum Board",
+                "content": "Requirements for gypsum board assemblies including type, thickness, fire-resistance ratings, fastening patterns, and finishing levels per GA-216."
             },
             {
                 "csi": "23", "num": "23 00 00", "title": "Heating, Ventilating, and Air-Conditioning (HVAC)",
-                "content": "General requirements for HVAC systems including ductwork, piping, equipment, and controls. All equipment must meet specified efficiency ratings."
-            }
+                "content": "General requirements for HVAC systems including ductwork, piping, equipment, and controls. All equipment must meet specified efficiency ratings per ASHRAE 90.1."
+            },
+            {
+                "csi": "26", "num": "26 05 00", "title": "Common Work Results for Electrical",
+                "content": "General requirements for electrical work including conduit, wire, boxes, panels, and connections. All work must comply with NEC and local electrical code requirements."
+            },
         ]
 
         for s in specs:
@@ -191,21 +215,71 @@ def init_kg():
                 "rule_id": "DISP-RULE-01",
                 "desc": "Identify RFI emails",
                 "cond": "Email subject contains 'RFI' or 'Request for Information'",
-                "act": "Classify as RFI and route to RFI workflow queue",
+                "act": "Classify as RFI and route to AGENT-RFI-001",
                 "conf": 0.85,
                 "prio": 1,
-                "text_for_embedding": "Identify RFI emails. If email subject contains 'RFI' or 'Request for Information', classify as RFI and route to RFI workflow queue."
+                "text_for_embedding": "Identify RFI emails. If email subject contains 'RFI' or 'Request for Information', classify as RFI and route to AGENT-RFI-001."
+            },
+            {
+                "agent_id": "AGENT-DISPATCH-001",
+                "rule_id": "DISP-RULE-02",
+                "desc": "Identify Submittal emails",
+                "cond": "Email subject contains 'SUBMITTAL' or 'Shop Drawing'",
+                "act": "Classify as SUBMITTAL and escalate to human review (Phase 0)",
+                "conf": 0.85,
+                "prio": 2,
+                "text_for_embedding": "Identify Submittal emails. If email subject contains SUBMITTAL or Shop Drawing, classify as SUBMITTAL and escalate to human review."
             },
             {
                 "agent_id": "AGENT-RFI-001",
                 "rule_id": "RFI-RULE-01",
                 "desc": "Missing Attachment",
                 "cond": "RFI body references an attachment but none is attached",
-                "act": "Draft a reply asking for the missing attachment and escalate to human review.",
+                "act": "Draft a reply requesting the missing attachment. Set confidence 0.40 to trigger escalation.",
                 "conf": 0.90,
                 "prio": 1,
                 "text_for_embedding": "Missing Attachment rule. If RFI body references an attachment but none is attached, draft a reply asking for the missing attachment and escalate to human review."
-            }
+            },
+            {
+                "agent_id": "AGENT-RFI-001",
+                "rule_id": "RFI-RULE-02",
+                "desc": "Standard spec-backed RFI response",
+                "cond": "RFI question can be answered by referencing contract documents or spec sections",
+                "act": "Draft a response citing the relevant spec section or drawing. Target confidence >= 0.75.",
+                "conf": 0.75,
+                "prio": 2,
+                "text_for_embedding": "Standard spec-backed RFI response. Draft a response citing the relevant spec section or drawing reference for questions answerable from contract documents."
+            },
+            {
+                "agent_id": "AGENT-RFI-001",
+                "rule_id": "RFI-RULE-03",
+                "desc": "Design intent question requiring architect judgment",
+                "cond": "RFI asks about design intent, aesthetics, or requires professional judgment beyond documented specs",
+                "act": "Draft preliminary framing of the question and flag for CA staff review. Set confidence 0.55.",
+                "conf": 0.55,
+                "prio": 3,
+                "text_for_embedding": "Design intent question requiring architect judgment. RFI asks about design intent, aesthetics, or requires professional judgment beyond documented specs. Flag for CA staff review."
+            },
+            {
+                "agent_id": "AGENT-RFI-001",
+                "rule_id": "RFI-RULE-04",
+                "desc": "RFI references drawing sheet for clarification",
+                "cond": "RFI references a specific drawing sheet number (e.g. A-101, S-201)",
+                "act": "Include the referenced drawing sheet in the response context. Note the sheet reference in the draft header.",
+                "conf": 0.80,
+                "prio": 4,
+                "text_for_embedding": "RFI references drawing sheet. When RFI references specific drawing sheet numbers like A-101 or S-201, include the referenced drawing sheet in response context."
+            },
+            {
+                "agent_id": "AGENT-RFI-001",
+                "rule_id": "RFI-RULE-05",
+                "desc": "Duplicate RFI detection",
+                "cond": "RFI question appears substantially similar to a previously answered RFI in the log",
+                "act": "Draft response referencing the prior RFI number and answer. Set confidence 0.85.",
+                "conf": 0.85,
+                "prio": 5,
+                "text_for_embedding": "Duplicate RFI detection. If RFI question appears substantially similar to a previously answered RFI in the log, reference the prior RFI number and answer in the response."
+            },
         ]
 
         for r in rules:
@@ -238,8 +312,22 @@ def init_kg():
             except Exception as e:
                 logger.error(f"Failed to process PlaybookRule {r['rule_id']}: {e}")
 
+        # 6. Verify seed counts
+        logger.info("Verifying seed data...")
+        counts = {
+            "Agent": session.run("MATCH (n:Agent) RETURN count(n) AS c").single()["c"],
+            "PlaybookRule": session.run("MATCH (n:PlaybookRule) RETURN count(n) AS c").single()["c"],
+            "DocumentType": session.run("MATCH (n:DocumentType) RETURN count(n) AS c").single()["c"],
+            "WorkflowStep": session.run("MATCH (n:WorkflowStep) RETURN count(n) AS c").single()["c"],
+            "SpecSection": session.run("MATCH (n:SpecSection) RETURN count(n) AS c").single()["c"],
+            "ContractClause": session.run("MATCH (n:ContractClause) RETURN count(n) AS c").single()["c"],
+        }
+        for label, count in counts.items():
+            logger.info(f"  {label}: {count} nodes")
+
     driver.close()
     logger.info("Knowledge Graph initialization complete.")
+    return counts
 
 if __name__ == "__main__":
     init_kg()

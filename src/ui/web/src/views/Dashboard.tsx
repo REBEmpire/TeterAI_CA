@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { listProjects } from '../api/client'
 import { UrgencyBadge } from '../components/common/UrgencyBadge'
 import { ConfidenceMeter } from '../components/common/ConfidenceMeter'
 import { useTaskQueue } from '../hooks/useTaskQueue'
-import type { DocumentType, TaskSummary, Urgency } from '../types'
+import type { DocumentType, ProjectSummary, TaskSummary, Urgency } from '../types'
 
 const DOC_TYPES: DocumentType[] = [
   'RFI', 'SUBMITTAL', 'SUBSTITUTION', 'CHANGE_ORDER',
@@ -89,12 +90,19 @@ export function Dashboard() {
   const [filterProject, setFilterProject] = useState('')
   const [filterDocType, setFilterDocType] = useState('')
   const [filterUrgency, setFilterUrgency] = useState('')
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+
+  useEffect(() => {
+    listProjects().then(setProjects).catch(() => {/* non-critical */})
+  }, [])
 
   const { tasks, loading, error } = useTaskQueue({
     project: filterProject || undefined,
     docType: filterDocType || undefined,
     urgency: filterUrgency || undefined,
   })
+
+  const prevCountRef = useRef(0)
 
   // Update tab title with unread count
   useEffect(() => {
@@ -109,7 +117,6 @@ export function Dashboard() {
     }
   }, [])
 
-  const prevCountRef = { current: 0 }
   useEffect(() => {
     const prev = prevCountRef.current
     if (tasks.length > prev && prev > 0 && Notification.permission === 'granted') {
@@ -148,7 +155,11 @@ export function Dashboard() {
           aria-label="Filter by project"
         >
           <option value="">All Projects</option>
-          {/* Projects are populated dynamically; placeholder options shown */}
+          {projects.map((p) => (
+            <option key={p.project_id} value={p.project_number}>
+              {p.project_number} — {p.name}
+            </option>
+          ))}
         </select>
 
         <select

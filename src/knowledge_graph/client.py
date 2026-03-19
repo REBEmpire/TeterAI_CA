@@ -134,10 +134,20 @@ class KnowledgeGraphClient:
                 return record.data()
             return None
 
-    def log_correction(self, correction_data: Dict[str, Any]) -> None:
+    def log_correction(
+        self,
+        task_id: str,
+        agent_id: str,
+        correction_type: str,
+        original_text: str,
+        edited_text: str,
+        reviewed_by: str = "",
+        event_id: str = "",
+    ) -> None:
         if not self._driver:
             return
 
+        import uuid as _uuid
         query = """
         CREATE (c:CorrectionEvent {
             event_id: $event_id,
@@ -147,16 +157,23 @@ class KnowledgeGraphClient:
             corrected_text: $corrected_text,
             correction_type: $correction_type,
             reviewed_by: $reviewed_by,
-            timestamp: datetime($timestamp)
+            timestamp: datetime()
         })
         WITH c
         MATCH (a:Agent {agent_id: $agent_id})-[:HAS_RULE]->(r:PlaybookRule)
-        // Link to the primary playbook rule temporarily - Phase 1 will do advanced matching
         WHERE r.priority = 1
         CREATE (c)-[:UPDATES]->(r)
         """
 
         with self._driver.session() as session:
-            session.run(query, **correction_data)
+            session.run(query, {
+                "event_id": event_id or str(_uuid.uuid4()),
+                "agent_id": agent_id,
+                "task_id": task_id,
+                "original_text": original_text,
+                "corrected_text": edited_text,
+                "correction_type": correction_type,
+                "reviewed_by": reviewed_by,
+            })
 
 kg_client = KnowledgeGraphClient()

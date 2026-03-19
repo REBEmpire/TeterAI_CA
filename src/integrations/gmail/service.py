@@ -16,8 +16,9 @@ from .models import ParsedEmail, EmailAttachment
 logger = logging.getLogger(__name__)
 
 class GmailService:
-    def __init__(self, gcp: GCPIntegration):
+    def __init__(self, gcp: GCPIntegration, drive_service=None):
         self.gcp = gcp
+        self._drive = drive_service
         self.inbox_address = os.environ.get("GMAIL_INBOX_ADDRESS", "me")
         self.max_emails = int(os.environ.get("GMAIL_MAX_EMAILS_PER_POLL", 50))
         self.max_attachment_size = int(os.environ.get("GMAIL_ATTACHMENT_MAX_SIZE_MB", 25)) * 1024 * 1024
@@ -223,7 +224,7 @@ class GmailService:
         except Exception as e:
             logger.error(f"Failed to apply label to {message_id}: {e}")
 
-    def create_ingest_record(self, parsed: ParsedEmail, attachment_drive_paths: List[str]):
+    def create_ingest_record(self, parsed: ParsedEmail, attachment_metadata: List[Dict[str, Any]]):
         if not getattr(self.gcp, 'firestore_client', None):
             logger.warning("No Firestore client; skipping ingest record creation")
             return
@@ -240,7 +241,12 @@ class GmailService:
             "subject": parsed.subject,
             "body_text": parsed.body_text[:10000],
             "body_text_truncated": len(parsed.body_text) > 10000,
-            "attachment_drive_paths": attachment_drive_paths,
+            # attachment_metadata: list of {filename, mime_type, size_bytes, drive_file_id}
+            "attachment_metadata": attachment_metadata,
+            # Keep legacy field for backwards compat
+            "attachment_drive_paths": [
+                a.get("drive_file_id") or a.get("stub_path", "") for a in attachment_metadata
+            ],
             "subject_hints": parsed.subject_hints,
             "status": "PENDING_CLASSIFICATION",
             "created_at": firestore.SERVER_TIMESTAMP
@@ -250,16 +256,43 @@ class GmailService:
         doc_ref.set(doc_data)
         logger.info(f"Created EmailIngest record: {ingest_id}")
 
-    def upload_attachments_to_drive(self, parsed: ParsedEmail) -> List[str]:
-        # Stubbing Drive integration for now as it's not fully built
-        # It should interact with src/integrations/drive/service.py
-        paths = []
+    def upload_attachments_to_drive(self, parsed: ParsedEmail) -> List[Dict[str, Any]]:
+        """Upload email attachments to the Drive global inbox (Holding Folder).
+
+        Returns a list of attachment metadata dicts with keys:
+            filename, mime_type, size_bytes, drive_file_id
+        Falls back to a stub path dict (drive_file_id=None) if Drive is unavailable.
+        """
+        from integrations.drive.service import DRIVE_INBOX_FOLDER_ID
+        results: List[Dict[str, Any]] = []
         for att in parsed.attachments:
-            # Simulate upload path
-            dt_str = parsed.received_at.strftime("%Y-%m-%d")
-            path = f"04 - Agent Workspace/Holding Folder/{dt_str}/{parsed.message_id}/{att.filename}"
-            paths.append(path)
-        return paths
+            entry: Dict[str, Any] = {
+                "filename": att.filename,
+                "mime_type": att.mime_type,
+                "size_bytes": att.size_bytes,
+                "drive_file_id": None,
+            }
+            if self._drive and DRIVE_INBOX_FOLDER_ID and att.content:
+                try:
+                    file_id = self._drive.upload_file(
+                        folder_id=DRIVE_INBOX_FOLDER_ID,
+                        filename=att.filename,
+                        content=att.content,
+                        mime_type=att.mime_type or "application/octet-stream",
+                    )
+                    entry["drive_file_id"] = file_id
+                    logger.info(f"Uploaded {att.filename} → Drive file {file_id}")
+                except Exception as e:
+                    logger.warning(f"Drive upload failed for {att.filename}: {e}")
+            else:
+                # Drive not configured — store deterministic stub path for traceability
+                dt_str = parsed.received_at.strftime("%Y-%m-%d")
+                entry["stub_path"] = (
+                    f"04 - Agent Workspace/Holding Folder/"
+                    f"{dt_str}/{parsed.message_id}/{att.filename}"
+                )
+            results.append(entry)
+        return results
 
     def poll(self) -> List[str]:
         logger.info("Starting Gmail polling cycle")
@@ -297,9 +330,9 @@ class GmailService:
 
                 parsed = self.parse_message(msg_full)
 
-                drive_paths = self.upload_attachments_to_drive(parsed)
+                attachment_metadata = self.upload_attachments_to_drive(parsed)
 
-                self.create_ingest_record(parsed, drive_paths)
+                self.create_ingest_record(parsed, attachment_metadata)
 
                 self.mark_as_processed(msg_id)
                 self.apply_ai_label_and_mark_read(msg_id)
