@@ -93,9 +93,9 @@ The Model Registry is a versioned configuration (stored in Firestore collection 
       "tier_3": { "provider": "xai", "model": "grok-3-mini", "max_tokens": 4096 }
     },
     "CLASSIFY": {
-      "tier_1": { "provider": "anthropic", "model": "claude-haiku-4-5-20251001", "max_tokens": 1024 },
-      "tier_2": { "provider": "google", "model": "gemini-2.0-flash-lite", "max_tokens": 1024 },
-      "tier_3": { "provider": "xai", "model": "grok-3-mini", "max_tokens": 1024 }
+      "tier_1": { "provider": "google", "model": "gemini-2.5-flash",        "max_tokens": 1024 },
+      "tier_2": { "provider": "xai",    "model": "grok-4-1-fast-reasoning", "max_tokens": 1024 },
+      "tier_3": { "provider": "google", "model": "gemini-3-flash-preview",  "max_tokens": 1024 }
     },
     "GENERATE_DOC": {
       "tier_1": { "provider": "anthropic", "model": "claude-sonnet-4-6", "max_tokens": 8192 },
