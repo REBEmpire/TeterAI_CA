@@ -16,6 +16,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# FastAPI web application (import for uvicorn: main:app)
+# ---------------------------------------------------------------------------
+from ui.api.server import app  # noqa: F401  — re-exported for uvicorn
+
+
+# ---------------------------------------------------------------------------
+# Agent runner (batch / Cloud Run Jobs mode)
+# ---------------------------------------------------------------------------
 
 def main():
     gcp = GCPIntegration()

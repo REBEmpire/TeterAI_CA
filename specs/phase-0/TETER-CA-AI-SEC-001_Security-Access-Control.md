@@ -175,7 +175,7 @@ No internal service exposes unauthenticated endpoints. All Cloud Run services ar
 | Email content (raw) | Firestore (tasks collection) | Google-managed encryption at rest |
 | Document content | Google Drive | Google-managed encryption at rest |
 | Agent thought chains | Google Drive (04 - Agent Workspace/Thought Chains) | Google-managed encryption at rest |
-| User sessions | Firestore (sessions collection) | JWT signed with session-secret |
+| User sessions | HttpOnly, Secure, SameSite=Strict cookie (server-set) | JWT signed with `session-secret` from Secret Manager; **never stored in `localStorage`** — see UI-001 §7.3 |
 
 No PII or confidential document content is stored in logs. Log entries reference task IDs only; content is retrieved from Firestore/Drive on demand.
 
@@ -206,3 +206,4 @@ No PII or confidential document content is stored in logs. Log entries reference
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | v0.1.0 | 2026-03-18 | TeterAI Team | Initial draft |
+| v0.1.1 | 2026-03-19 | AI Agent | Added auth models and Firestore role management implementation |

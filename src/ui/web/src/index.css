@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Teter brand CSS custom properties */
+:root {
+  --teter-orange: #d06f1a;
+  --teter-orange-dark: #b35e14;
+  --teter-orange-light: #e8892a;
+  --teter-dark: #313131;
+  --teter-dark-soft: #3d3d3d;
+  --teter-white: #ffffff;
+  --teter-gray: #eeeeee;
+  --teter-gray-mid: #d4d4d4;
+  --teter-gray-text: #6b6b6b;
+  --confidence-high: #2e7d32;
+  --confidence-mid: #f9a825;
+  --confidence-low: #c62828;
+}
+
+/* Global base styles */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  font-weight: 400;
+  background-color: #f7f7f7;
+  color: #313131;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Teter component utility classes */
+@layer components {
+  .btn-primary {
+    @apply bg-teter-orange hover:bg-teter-orange-dark text-white font-semibold
+           px-4 py-2 rounded transition-colors duration-150 disabled:opacity-50
+           disabled:cursor-not-allowed;
+  }
+
+  .btn-dark {
+    @apply bg-teter-dark hover:bg-teter-dark-soft text-white font-semibold
+           px-4 py-2 rounded transition-colors duration-150 disabled:opacity-50
+           disabled:cursor-not-allowed;
+  }
+
+  .btn-outline {
+    @apply border border-teter-gray-mid bg-white hover:bg-teter-gray text-teter-dark
+           font-semibold px-4 py-2 rounded transition-colors duration-150;
+  }
+
+  .btn-danger {
+    @apply bg-red-700 hover:bg-red-800 text-white font-semibold
+           px-4 py-2 rounded transition-colors duration-150;
+  }
+
+  .card {
+    @apply bg-white rounded border border-teter-gray-mid shadow-card
+           hover:shadow-card-hover transition-shadow duration-150 cursor-pointer;
+  }
+
+  .input {
+    @apply border border-teter-gray-mid rounded px-3 py-2 w-full text-sm
+           focus:outline-none focus:border-teter-orange focus:ring-1 focus:ring-teter-orange;
+  }
+
+  .select {
+    @apply border border-teter-gray-mid rounded px-3 py-2 text-sm bg-white
+           focus:outline-none focus:border-teter-orange focus:ring-1 focus:ring-teter-orange;
+  }
+
+  .label {
+    @apply text-xs font-semibold text-teter-gray-text uppercase tracking-wide mb-1;
+  }
+
+  .tab-active {
+    @apply border-b-2 border-teter-orange text-teter-orange font-semibold;
+  }
+
+  .tab-inactive {
+    @apply border-b-2 border-transparent text-teter-gray-text hover:text-teter-dark;
+  }
+}
