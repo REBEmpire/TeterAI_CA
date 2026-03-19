@@ -4,7 +4,7 @@
 |-------|-------|
 | Document ID | TETER-CA-AI-SEC-001 |
 | Version | v0.1.0 |
-| Status | Draft |
+| Status | In Progress |
 | Phase | Phase 0 — Foundation |
 | Last Updated | 2026-03-18 |
 
