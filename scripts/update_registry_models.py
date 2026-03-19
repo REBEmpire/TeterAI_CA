@@ -15,8 +15,8 @@ def update_models():
         return
 
     registry = ModelRegistry(
-        version="1.2.0",
-        updated_at="2026-03-18T02:00:00Z",
+        version="1.3.0",
+        updated_at="2026-03-19T00:00:00Z",
         capability_classes={
             CapabilityClass.REASON_DEEP: CapabilityConfig(
                 tier_1=ModelConfig(provider="anthropic", model="claude-opus-4-6", max_tokens=8192),
@@ -29,9 +29,9 @@ def update_models():
                 tier_3=ModelConfig(provider="xai", model="grok-4-1-fast-reasoning", max_tokens=4096)
             ),
             CapabilityClass.CLASSIFY: CapabilityConfig(
-                tier_1=ModelConfig(provider="anthropic", model="claude-haiku-4-5-20251001", max_tokens=1024),
-                tier_2=ModelConfig(provider="google", model="gemini-2.5-flash", max_tokens=1024),
-                tier_3=ModelConfig(provider="xai", model="grok-4-1-fast-non-reasoning", max_tokens=1024)
+                tier_1=ModelConfig(provider="google", model="gemini-2.5-flash", max_tokens=1024),
+                tier_2=ModelConfig(provider="xai", model="grok-4-1-fast-reasoning", max_tokens=1024),
+                tier_3=ModelConfig(provider="google", model="gemini-3-flash-preview", max_tokens=1024)
             ),
             CapabilityClass.GENERATE_DOC: CapabilityConfig(
                 tier_1=ModelConfig(provider="anthropic", model="claude-sonnet-4-6", max_tokens=8192),
