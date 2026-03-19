@@ -16,6 +16,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .routes import router
+<<<<<<< jules-8129223096398690915-00197511
+from workflow.router import router as workflow_router
+=======
+>>>>>>> main
 
 app = FastAPI(
     title="TeterAI CA — Web API",
@@ -42,6 +46,10 @@ app.add_middleware(
 
 # Mount all API routes under /api/v1
 app.include_router(router, prefix="/api/v1")
+<<<<<<< jules-8129223096398690915-00197511
+app.include_router(workflow_router, prefix="/api/v1/workflow")
+=======
+>>>>>>> main
 
 # Serve the compiled React app from src/ui/web/dist (production build)
 _web_dist = Path(__file__).parent.parent / "web" / "dist"
