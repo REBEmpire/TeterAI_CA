@@ -70,6 +70,27 @@ class AIEngine:
 
                 response.metadata.tier_used = tier_num
                 response.metadata.fallback_triggered = fallback_triggered
+
+                try:
+                    from audit.logger import audit_logger
+                    from audit.models import AICallLog
+                    audit_logger.log(AICallLog(
+                        ai_call_id=response.metadata.ai_call_id,
+                        task_id=request.task_id,
+                        calling_agent=request.calling_agent,
+                        capability_class=request.capability_class.value,
+                        tier_used=response.metadata.tier_used,
+                        provider=response.metadata.provider,
+                        model=response.metadata.model,
+                        fallback_triggered=response.metadata.fallback_triggered,
+                        input_tokens=response.metadata.input_tokens,
+                        output_tokens=response.metadata.output_tokens,
+                        latency_ms=response.metadata.latency_ms,
+                        status="SUCCESS",
+                    ))
+                except Exception:
+                    pass  # audit failure must never interrupt AI calls
+
                 return response
 
             except Exception as e:

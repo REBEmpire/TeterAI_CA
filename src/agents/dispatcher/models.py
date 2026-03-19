@@ -47,6 +47,7 @@ class ClassificationResult(BaseModel):
     document_type: DimensionResult
     urgency: DimensionResult
     raw_response: str  # original AI output for audit
+    ai_call_id: Optional[str] = None  # AI call ID for audit trail linkage
 
 
 class RoutingDecision(BaseModel):

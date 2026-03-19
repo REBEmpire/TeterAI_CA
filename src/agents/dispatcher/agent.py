@@ -6,6 +6,9 @@ from ai_engine.engine import AIEngine
 from ai_engine.models import AIEngineExhaustedError
 from ai_engine.gcp import GCPIntegration
 
+from audit.logger import audit_logger
+from audit.models import AgentActionLog, ErrorLog, ErrorSeverity, SystemEventLog
+
 from .classifier import EmailClassifier, ClassificationParseError
 from .router import DispatcherRouter
 from .models import TaskStatus
@@ -32,8 +35,10 @@ class DispatcherAgent:
         pending = ingests_ref.where("status", "==", "PENDING_CLASSIFICATION").stream()
 
         processed_task_ids: list[str] = []
+        ingests_processed = 0
 
         for doc in pending:
+            ingests_processed += 1
             ingest = doc.to_dict()
             ingest_id = ingest.get("ingest_id", doc.id)
             task_id = f"TASK-{ingest_id}-{uuid.uuid4().hex[:8].upper()}"
@@ -91,15 +96,30 @@ class DispatcherAgent:
                 continue
 
             # Step 3: Classify via AI Engine
+            task_start_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
             try:
                 classification = self._classifier.classify(ingest)
             except AIEngineExhaustedError as e:
                 logger.error(f"[{task_id}] AIEngine exhausted: {e}")
                 self._set_error(db, task_id, ingest_id, str(e), now)
+                audit_logger.log(ErrorLog(
+                    component=AGENT_ID,
+                    task_id=task_id,
+                    error_code="AI_ENGINE_EXHAUSTED",
+                    error_message=str(e),
+                    severity=ErrorSeverity.ERROR,
+                ))
                 continue
             except ClassificationParseError as e:
                 logger.error(f"[{task_id}] Classification parse error: {e}")
                 self._set_error(db, task_id, ingest_id, str(e), now)
+                audit_logger.log(ErrorLog(
+                    component=AGENT_ID,
+                    task_id=task_id,
+                    error_code="CLASSIFICATION_PARSE_ERROR",
+                    error_message=str(e),
+                    severity=ErrorSeverity.ERROR,
+                ))
                 continue
 
             # Step 4: Routing decision
@@ -160,6 +180,41 @@ class DispatcherAgent:
                 f"agent={routing.assigned_agent} | {routing.reason}"
             )
             processed_task_ids.append(task_id)
+
+            # Emit AGENT_ACTION audit log for this task
+            duration_ms = int(datetime.now(timezone.utc).timestamp() * 1000) - task_start_ms
+            min_confidence = min(
+                classification.project_id.confidence,
+                classification.phase.confidence,
+                classification.document_type.confidence,
+                classification.urgency.confidence,
+            )
+            subject = ingest.get("subject", "")
+            ai_call_ids = [classification.ai_call_id] if classification.ai_call_id else []
+            audit_logger.log(AgentActionLog(
+                agent_id=AGENT_ID,
+                task_id=task_id,
+                action="CLASSIFY_AND_ROUTE",
+                input_summary=f"ingest={ingest_id} | {subject[:100]}",
+                output_summary=(
+                    f"{routing.action} → {routing.assigned_agent or 'human'} | {routing.reason}"
+                ),
+                confidence_score=min_confidence,
+                ai_call_ids=ai_call_ids,
+                duration_ms=duration_ms,
+                status="SUCCESS",
+            ))
+
+        # Emit SYSTEM_EVENT audit log for the completed poll run
+        audit_logger.log(SystemEventLog(
+            event="EMAIL_POLL_COMPLETED",
+            component=AGENT_ID,
+            details={
+                "ingests_processed": ingests_processed,
+                "tasks_created": len(processed_task_ids),
+            },
+            status="SUCCESS",
+        ))
 
         return processed_task_ids
 
