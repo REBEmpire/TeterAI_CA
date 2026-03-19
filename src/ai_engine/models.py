@@ -1,3 +1,4 @@
+import uuid
 from enum import Enum
 from typing import Optional, Dict, List, Any
 from pydantic import BaseModel, Field
@@ -24,6 +25,7 @@ class AIRequest(BaseModel):
     task_id: str
 
 class AIMetadata(BaseModel):
+    ai_call_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     tier_used: int
     provider: str
     model: str

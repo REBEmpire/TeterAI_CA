@@ -86,6 +86,7 @@ class EmailClassifier:
                 document_type=DimensionResult(**data["document_type"]),
                 urgency=DimensionResult(**data["urgency"]),
                 raw_response=response.content,
+                ai_call_id=response.metadata.ai_call_id,
             )
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
             logger.error(
