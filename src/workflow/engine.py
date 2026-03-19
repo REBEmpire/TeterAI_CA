@@ -210,7 +210,8 @@ class WorkflowEngine:
             agent_id=agent_id,
             correction_type=correction_type,
             original_text=original,
-            edited_text=edited
+            edited_text=edited,
+            reviewed_by=reviewer_uid,
         )
 
         self._audit.log_event(

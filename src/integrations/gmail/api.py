@@ -3,6 +3,7 @@ from pydantic import BaseModel
 import logging
 
 from ai_engine.gcp import GCPIntegration
+from integrations.drive.service import DriveService
 from .service import GmailService
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,12 @@ class PollResponse(BaseModel):
 async def trigger_poll(background_tasks: BackgroundTasks):
     try:
         gcp = GCPIntegration()
-        service = GmailService(gcp)
+        try:
+            drive_service = DriveService()
+        except Exception as e:
+            logger.warning(f"DriveService unavailable — attachments will use stub paths: {e}")
+            drive_service = None
+        service = GmailService(gcp, drive_service=drive_service)
 
         # We process inline for simplicity and to return the count,
         # but in a real-world high-volume scenario, background_tasks could be used.

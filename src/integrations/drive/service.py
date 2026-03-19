@@ -1,14 +1,20 @@
 import json
 import io
-from typing import Dict, Any, Optional
+import os
+from typing import Dict, Any, Optional, Tuple
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 from google.cloud import firestore
 
 from src.ai_engine.gcp import gcp_integration
 
 DRIVE_ROOT_FOLDER_ID = '11VPprN5--8PPvgFoZFQWTqABRUuiNLkQ'
+
+# Global inbox folder for inbound attachments before project classification.
+# Set DRIVE_INBOX_FOLDER_ID in Secret Manager or env to the "Holding Folder"
+# shared folder ID. Falls back to root if unset.
+DRIVE_INBOX_FOLDER_ID = os.environ.get("DRIVE_INBOX_FOLDER_ID", DRIVE_ROOT_FOLDER_ID)
 
 CANONICAL_FOLDERS = {
     "01 - Bid Phase": [
@@ -137,6 +143,18 @@ class DriveService:
             update_kwargs['body'] = {'name': new_name}
 
         self.service.files().update(**update_kwargs).execute()
+
+    def download_file(self, file_id: str) -> Tuple[bytes, str]:
+        """Download file bytes and mime_type from Drive by file ID."""
+        meta = self.service.files().get(fileId=file_id, fields='mimeType').execute()
+        mime_type = meta.get('mimeType', 'application/octet-stream')
+        request = self.service.files().get_media(fileId=file_id)
+        buf = io.BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue(), mime_type
 
     def next_doc_number(self, project_id: str, doc_type: str) -> int:
         """Atomically increments the document counter in Firestore."""
