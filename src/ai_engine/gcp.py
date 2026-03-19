@@ -32,6 +32,9 @@ class GCPIntegration:
             "anthropic-key": "ANTHROPIC_API_KEY",
             "google-ai-key": "GOOGLE_API_KEY",
             "xai-key": "XAI_API_KEY",
+            "neo4j-uri": "NEO4J_URI",
+            "neo4j-username": "NEO4J_USERNAME",
+            "neo4j-password": "NEO4J_PASSWORD",
         }
         for secret_id, env_var in secrets.items():
             if not os.environ.get(env_var):
