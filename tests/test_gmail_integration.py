@@ -90,7 +90,7 @@ def test_create_ingest_record(mock_firestore, gmail_service, mock_gcp):
         subject_hints={"is_reply": "true"}
     )
 
-    gmail_service.create_ingest_record(parsed, ["drive/path/1.pdf"])
+    gmail_service.create_ingest_record(parsed, [{"drive_file_id": "drive/path/1.pdf"}])
 
     mock_gcp.firestore_client.collection.assert_called_with("email_ingests")
     doc_ref = mock_gcp.firestore_client.collection().document()

@@ -149,6 +149,7 @@ class TestEmailClassifier:
         mock_engine = MagicMock()
         mock_response = MagicMock()
         mock_response.content = raw_json
+        mock_response.metadata.ai_call_id = 'mock-call-id'
         mock_engine.generate_response.return_value = mock_response
         return mock_engine
 
@@ -239,6 +240,7 @@ class TestDispatcherAgent:
         })
         mock_response = MagicMock()
         mock_response.content = raw
+        mock_response.metadata.ai_call_id = 'mock-call-id'
         mock_engine.generate_response.return_value = mock_response
         return mock_engine
 
