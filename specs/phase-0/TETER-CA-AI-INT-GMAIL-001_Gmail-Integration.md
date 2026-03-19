@@ -3,8 +3,8 @@
 | Field | Value |
 |-------|-------|
 | Document ID | TETER-CA-AI-INT-GMAIL-001 |
-| Version | v0.1.0 |
-| Status | Draft |
+| Version | v0.2.0 |
+| Status | In Progress |
 | Phase | Phase 0 — Foundation |
 | Last Updated | 2026-03-18 |
 
@@ -245,3 +245,17 @@ Firestore triggers or the Dispatcher's 20-minute queue review picks this up.
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | v0.1.0 | 2026-03-18 | TeterAI Team | Initial draft |
+
+---
+
+## 15. Implementation Status
+
+- [x] Create Gmail models (`EmailAttachment`, `ParsedEmail`)
+- [x] Implement polling logic & Gmail API auth (`is:unread -label:AI-Processed`)
+- [x] Email parsing & Subject hinting logic
+- [x] Deduplication logic using Firestore (`processed_emails` collection)
+- [x] Emit `EmailIngest` records for Dispatcher agent
+- [x] Apply `AI-Processed` label
+- [x] Expose Cloud Run HTTP endpoint (`POST /poll`) using FastAPI
+- [x] Base mock tests coverage
+- [ ] Implement real Google Drive attachment upload (stubbed currently)
