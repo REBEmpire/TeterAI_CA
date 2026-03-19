@@ -163,6 +163,15 @@ def get_task(
 
     data = doc.to_dict()
     data["task_id"] = task_id
+
+    # Merge thought_chains data (RFI Agent draft + confidence) into the task dict.
+    # setdefault means the task doc fields take precedence if they already exist.
+    tc = _load_thought_chain(db, task_id)
+    if tc:
+        data.setdefault("draft_content", tc.get("draft_rfi_response", ""))
+        data.setdefault("confidence_score", tc.get("confidence_score"))
+        data.setdefault("citations", tc.get("references", []))
+
     return _to_task_detail(data)
 
 
@@ -306,22 +315,39 @@ def get_draft(
     task_id: str,
     current_user: Annotated[UserInfo, Depends(require_auth)],
 ):
-    """Return the agent's draft text for a task."""
+    """
+    Return the agent's draft text for a task.
+
+    Primary source: thought_chains/{task_id} (written by RFI Agent).
+    Fallback: draft_content field on the task document (future agents).
+    """
     db = _db()
     if db is None:
         raise HTTPException(status_code=503, detail="Database unavailable.")
 
-    doc = db.collection("tasks").document(task_id).get()
-    if not doc.exists:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found.")
+    # Primary: thought_chains collection (RFI Agent writes here)
+    tc = _load_thought_chain(db, task_id)
+    if tc:
+        return {
+            "task_id": task_id,
+            "draft_content": tc.get("draft_rfi_response", ""),
+            "confidence_score": tc.get("confidence_score"),
+            "citations": tc.get("references", []),
+            "review_flag": tc.get("review_flag"),
+            "agent_id": "",
+        }
 
-    data = doc.to_dict()
+    # Fallback: task document (non-RFI agents or legacy)
+    task_doc = db.collection("tasks").document(task_id).get()
+    if not task_doc.exists:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found.")
+    data = task_doc.to_dict()
     return {
         "task_id": task_id,
         "draft_content": data.get("draft_content", ""),
-        "draft_version": data.get("draft_version", ""),
         "confidence_score": data.get("confidence_score"),
         "citations": data.get("citations", []),
+        "review_flag": None,
         "agent_id": data.get("agent_id", ""),
     }
 
@@ -601,6 +627,38 @@ def export_task_audit_csv(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+def _min_confidence(value) -> Optional[float]:
+    """
+    classification_confidence is stored by the Dispatcher Agent as a dict:
+      { "project_id": 0.9, "phase": 0.85, "document_type": 0.91, "urgency": 0.88 }
+    Return the minimum (worst-case) dimension as the overall confidence score.
+    Falls back gracefully for legacy scalar values.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        values = [v for v in value.values() if isinstance(v, (int, float))]
+        return min(values) if values else None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _load_thought_chain(db, task_id: str) -> dict:
+    """
+    Read thought_chains/{task_id} written by the RFI Agent.
+    Fields: draft_rfi_response, confidence_score, review_flag, references.
+    Returns empty dict if the document does not exist.
+    """
+    try:
+        doc = db.collection("thought_chains").document(task_id).get()
+        return doc.to_dict() if doc.exists else {}
+    except Exception as exc:
+        logger.warning(f"Could not load thought_chains/{task_id}: {exc}")
+        return {}
+
+
 def _to_task_summary(data: dict) -> TaskSummary:
     return TaskSummary(
         task_id=data.get("task_id", ""),
@@ -613,7 +671,7 @@ def _to_task_summary(data: dict) -> TaskSummary:
         subject=data.get("subject"),
         created_at=_parse_dt(data.get("created_at")),
         response_due=_parse_dt(data.get("response_due")),
-        classification_confidence=data.get("classification_confidence"),
+        classification_confidence=_min_confidence(data.get("classification_confidence")),
         assigned_agent=data.get("assigned_agent"),
     )
 

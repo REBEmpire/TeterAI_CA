@@ -252,6 +252,21 @@ Accessible to `ADMIN` role only.
 | Project Management | No | Yes | No |
 | User Management | No | Yes | No |
 
+### 7.3 JWT Token Storage
+
+The JWT issued by the backend **must** be stored as an `HttpOnly`, `Secure`, `SameSite=Strict` cookie — **never in `localStorage` or `sessionStorage`**.
+
+| Attribute | Value | Reason |
+|-----------|-------|--------|
+| `HttpOnly` | true | Prevents JavaScript access — mitigates XSS token theft |
+| `Secure` | true | HTTPS-only transmission |
+| `SameSite` | `Strict` | Prevents CSRF |
+| `Path` | `/api` | Scoped to the API prefix only |
+
+The backend sets the cookie via `Set-Cookie` response header on `POST /auth/google/callback`. All subsequent API requests include the cookie automatically — no manual token attachment in frontend code.
+
+**Note on current Phase 0 prototype:** The prototype uses `localStorage` for development convenience (avoids HTTPS requirement on localhost). This **must** be migrated to `HttpOnly` cookies before any real user data is handled. Tracked in Open Question #5.
+
 ---
 
 ## 8. Mobile App Scope (Phase 0)
@@ -310,6 +325,8 @@ When a new task enters `STAGED_FOR_REVIEW`:
 | 1 | Should the Split-Screen Viewer allow inline annotation of source PDFs (e.g., highlight a spec section)? | CA Director | Open |
 | 2 | Should the mobile app support push notifications via FCM, or is in-app only sufficient for Phase 0? | Product | Open |
 | 3 | Does the app need dark mode? | CA Director | Open |
+| 4 | Should reviewers be able to assign tasks to other reviewers, or is the queue shared and first-come? | CA Director | Open |
+| 5 | JWT is currently stored in `localStorage` (dev convenience). Must be migrated to `HttpOnly` cookie before production. See §7.3. | Tech Lead | Open |
 | 4 | Should reviewers be able to assign tasks to other reviewers, or is the queue shared and first-come? | CA Director | Open |
 
 ---
