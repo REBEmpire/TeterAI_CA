@@ -38,3 +38,12 @@ gcp-credentials.json
 *.json
 !pyproject.toml
 !uv.lock
+# Allow web/mobile frontend JSON config files
+!src/ui/web/package.json
+!src/ui/web/package-lock.json
+!src/ui/web/tsconfig.json
+!src/ui/web/tsconfig.node.json
+
+# Allow Flutter lib directory (overrides Python lib/ exclusion for mobile app)
+!src/ui/mobile/lib/
+!src/ui/mobile/lib/**
