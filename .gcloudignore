@@ -1,0 +1,33 @@
+# .gcloudignore — excludes files from the Cloud Build upload context
+# Syntax mirrors .gitignore
+
+.git
+.gcloudignore
+
+# Python artifacts
+.venv
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Node artifacts — Docker re-installs inside the container
+node_modules
+src/ui/web/node_modules
+
+# React build output is produced inside Docker (not needed in upload)
+src/ui/web/dist
+
+# Dev/test/docs — not needed in the production image
+tests/
+specs/
+infrastructure/
+*.md
+
+# Local credentials and environment files — never upload
+.env
+.env.*
+gcp-credentials.json
