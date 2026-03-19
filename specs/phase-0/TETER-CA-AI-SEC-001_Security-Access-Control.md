@@ -206,3 +206,4 @@ No PII or confidential document content is stored in logs. Log entries reference
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | v0.1.0 | 2026-03-18 | TeterAI Team | Initial draft |
+| v0.1.1 | 2026-03-19 | AI Agent | Added auth models and Firestore role management implementation |
