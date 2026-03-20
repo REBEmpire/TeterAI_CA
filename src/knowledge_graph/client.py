@@ -17,7 +17,16 @@ class KnowledgeGraphClient:
             logger.warning("Neo4j credentials not fully provided in environment variables.")
             self._driver = None
         else:
-            self._driver = GraphDatabase.driver(uri, auth=(user, password))
+            try:
+                self._driver = GraphDatabase.driver(
+                    uri,
+                    auth=(user, password),
+                    connection_timeout=5,
+                    max_connection_lifetime=3600,
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize Neo4j driver: {e}")
+                self._driver = None
 
     def close(self):
         if self._driver:
