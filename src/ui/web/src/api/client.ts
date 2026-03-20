@@ -61,6 +61,10 @@ export async function loginWithGoogleToken(idToken: string): Promise<TokenRespon
   return request<TokenResponse>('POST', '/auth/google/callback', { id_token: idToken })
 }
 
+export async function loginWithPassword(username: string, password: string): Promise<TokenResponse> {
+  return request<TokenResponse>('POST', '/auth/password', { username, password })
+}
+
 export async function getMe(): Promise<UserInfo> {
   return request<UserInfo>('GET', '/me')
 }
