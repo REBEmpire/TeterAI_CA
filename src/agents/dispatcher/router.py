@@ -9,6 +9,7 @@ CONFIDENCE_THRESHOLD = 0.80
 # Phase 0 routing table: (DocumentType, Phase) → agent_id
 PHASE_0_ROUTING: dict[tuple, str] = {
     (DocumentType.RFI, Phase.CONSTRUCTION): "AGENT-RFI-001",
+    (DocumentType.SUBMITTAL, Phase.CONSTRUCTION): "AGENT-SUBMITTAL-001",
 }
 
 
