@@ -61,6 +61,8 @@ export interface TaskDetail extends TaskSummary {
   thought_chain_file_id?: string
   source_email?: Record<string, unknown>
   attachments: Attachment[]
+  referenced_specs?: Array<Record<string, string>>
+  referenced_drawings?: Array<Record<string, string>>
   phase?: Phase
   rejection_reason?: string
   rejection_notes?: string
