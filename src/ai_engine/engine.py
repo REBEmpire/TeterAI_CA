@@ -213,13 +213,15 @@ class AIEngine:
         """
         Generates a vector embedding for the given text.
         Primary: Google (vertex_ai/text-embedding-004)
-        Fallback: xAI (xai/v1/embeddings) or litellm supported embedding.
+        Fallback 1: Google (gemini/gemini-embedding-2-preview)
+        Fallback 2: xAI (xai/v1/embeddings) or litellm supported embedding.
         """
         timeout = int(os.environ.get("AI_ENGINE_RESPONSE_TIMEOUT_SECONDS", 120))
 
         # We define a simple fallback chain for embeddings.
         models_to_try = [
             ("google", "vertex_ai/text-embedding-004"),
+            ("google", "gemini/gemini-embedding-2-preview"),
             ("xai", "xai/v1/embeddings")
         ]
 
