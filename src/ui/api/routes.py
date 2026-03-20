@@ -17,7 +17,7 @@ from ai_engine.gcp import GCPIntegration
 from audit.logger import AuditLogger
 from audit.models import HumanReviewAction, HumanReviewLog
 
-from .auth import create_jwt, get_or_create_user, verify_google_id_token
+from .auth import create_jwt, get_or_create_user, verify_google_id_token, verify_password_login
 from .middleware import UserInfo, require_auth, require_role
 from .models import (
     ApproveRequest,
@@ -85,6 +85,32 @@ def google_callback(body: GoogleCallbackRequest):
     if not user.get("active", True):
         raise HTTPException(status_code=403, detail="Account is deactivated.")
 
+    token = create_jwt(
+        uid=user["uid"],
+        email=user["email"],
+        display_name=user["display_name"],
+        role=user["role"],
+    )
+    from .models import UserInfo as _UserInfo
+    return TokenResponse(
+        access_token=token,
+        user=_UserInfo(**{k: user[k] for k in ("uid", "email", "display_name", "role")}),
+    )
+
+
+class PasswordLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@router.post("/auth/password", response_model=TokenResponse, tags=["auth"])
+def password_login(body: PasswordLoginRequest):
+    """
+    Exchange a username + password for a TeterAI JWT (test users only).
+    """
+    user = verify_password_login(body.username, body.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
     token = create_jwt(
         uid=user["uid"],
         email=user["email"],
