@@ -37,7 +37,7 @@ def init_kg():
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:PlaybookRule) REQUIRE p.rule_id IS UNIQUE")
 
         # 2. Create Vector Indexes
-        # Assuming 768 dimensions for gemini/text-embedding-004
+        # Assuming 768 dimensions for vertex_ai/text-embedding-004
         logger.info("Creating vector indexes (768 dimensions for Gemini)...")
         # SpecSection Index
         session.run("""
@@ -148,7 +148,7 @@ def init_kg():
                     cc.title = $title,
                     cc.text = $text,
                     cc.embedding = $emb,
-                    cc.embedding_model = 'gemini/text-embedding-004',
+                    cc.embedding_model = 'vertex_ai/text-embedding-004',
                     cc.embedding_updated_at = datetime()
                 """, id=c["clause_id"], standard=c["standard"], num=c["clause_number"],
                      title=c["title"], text=c["text"], emb=emb)
@@ -200,7 +200,7 @@ def init_kg():
                     ss.title = $title,
                     ss.content_summary = $content,
                     ss.embedding = $emb,
-                    ss.embedding_model = 'gemini/text-embedding-004',
+                    ss.embedding_model = 'vertex_ai/text-embedding-004',
                     ss.embedding_updated_at = datetime()
                 """, num=s["num"], csi=s["csi"], title=s["title"], content=s["content"], emb=emb)
             except Exception as e:
@@ -304,7 +304,7 @@ def init_kg():
                     pr.confidence_threshold = $conf,
                     pr.priority = $prio,
                     pr.embedding = $emb,
-                    pr.embedding_model = 'gemini/text-embedding-004',
+                    pr.embedding_model = 'vertex_ai/text-embedding-004',
                     pr.embedding_updated_at = datetime()
                 MERGE (a)-[:HAS_RULE]->(pr)
                 """, agent_id=r["agent_id"], rule_id=r["rule_id"], desc=r["desc"], cond=r["cond"],
