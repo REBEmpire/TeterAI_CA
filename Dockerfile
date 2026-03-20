@@ -28,6 +28,9 @@ COPY --from=frontend /app/src/ui/web/dist/ src/ui/web/dist/
 # src/ must be on the path for absolute imports (e.g. "from ui.api.server import app")
 ENV PYTHONPATH=/app/src
 
+# Add the uv-managed venv to PATH so uvicorn and other scripts are found
+ENV PATH="/app/.venv/bin:$PATH"
+
 # Cloud Run injects PORT (default 8080); bind to all interfaces
 ENV PORT=8080
 
