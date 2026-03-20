@@ -4,12 +4,6 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
-from ai_engine.engine import AIEngine
-from ai_engine.gcp import GCPIntegration
-from agents.dispatcher import DispatcherAgent
-from agents.rfi import RFIAgent
-from knowledge_graph.client import KnowledgeGraphClient
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -27,6 +21,12 @@ from ui.api.server import app  # noqa: F401  — re-exported for uvicorn
 # ---------------------------------------------------------------------------
 
 def main():
+    from ai_engine.engine import AIEngine
+    from ai_engine.gcp import GCPIntegration
+    from agents.dispatcher import DispatcherAgent
+    from agents.rfi import RFIAgent
+    from knowledge_graph.client import KnowledgeGraphClient
+
     gcp = GCPIntegration()
     ai_engine = AIEngine()
     kg_client = KnowledgeGraphClient()
