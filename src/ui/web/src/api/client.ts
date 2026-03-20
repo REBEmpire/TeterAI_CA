@@ -6,6 +6,7 @@ import type {
   AuditEntrySummary,
   ModelRegistryEntry,
   ProjectSummary,
+  SubmittalReviewData,
   TaskDetail,
   TaskSummary,
   TokenResponse,
@@ -148,6 +149,21 @@ export async function updateModel(
   model: string,
 ): Promise<void> {
   return request('PATCH', `/model-registry/${capabilityClass}`, { tier, model })
+}
+
+// ---------------------------------------------------------------------------
+// Submittal Review
+// ---------------------------------------------------------------------------
+
+export async function getSubmittalReview(taskId: string): Promise<SubmittalReviewData> {
+  return request<SubmittalReviewData>('GET', `/tasks/${taskId}/submittal-review`)
+}
+
+export async function approveSubmittalReview(
+  taskId: string,
+  selectedItems: Record<string, boolean>,
+): Promise<void> {
+  return request('POST', `/tasks/${taskId}/submittal-review/approve`, { selected_items: selectedItems })
 }
 
 // ---------------------------------------------------------------------------

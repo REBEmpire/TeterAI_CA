@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import litellm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from .models import (
@@ -145,6 +146,68 @@ class AIEngine:
             success=True
         )
 
+
+    def generate_all_models(self, request: "AIRequest") -> dict[int, "AIResponse | Exception"]:
+        """
+        Call all configured tiers in parallel (not as fallback).
+        Returns a dict keyed by tier number (1, 2, 3) with either an AIResponse or an Exception.
+        Used by the Submittal Review Agent to get all model outputs for comparison.
+        """
+        registry = self._get_registry()
+
+        if request.capability_class not in registry.capability_classes:
+            raise InvalidCapabilityClassError(
+                f"Capability class {request.capability_class} not found in registry."
+            )
+
+        config = registry.capability_classes[request.capability_class]
+
+        tiers: list[tuple[int, object]] = []
+        if config.tier_1: tiers.append((1, config.tier_1))
+        if config.tier_2: tiers.append((2, config.tier_2))
+        if config.tier_3: tiers.append((3, config.tier_3))
+
+        if not tiers:
+            raise RuntimeError(f"No model tiers configured for {request.capability_class}")
+
+        results: dict[int, object] = {}
+
+        def _call_tier(tier_num: int, tier_config) -> tuple[int, object]:
+            try:
+                response = self._call_model(request, tier_config)
+                response.metadata.tier_used = tier_num
+                response.metadata.fallback_triggered = False
+                try:
+                    from audit.logger import audit_logger
+                    from audit.models import AICallLog
+                    audit_logger.log(AICallLog(
+                        ai_call_id=response.metadata.ai_call_id,
+                        task_id=request.task_id,
+                        calling_agent=request.calling_agent,
+                        capability_class=request.capability_class.value,
+                        tier_used=tier_num,
+                        provider=response.metadata.provider,
+                        model=response.metadata.model,
+                        fallback_triggered=False,
+                        input_tokens=response.metadata.input_tokens,
+                        output_tokens=response.metadata.output_tokens,
+                        latency_ms=response.metadata.latency_ms,
+                        status="SUCCESS",
+                    ))
+                except Exception:
+                    pass
+                return tier_num, response
+            except Exception as e:
+                logger.error(f"Tier {tier_num} failed in generate_all_models: {e}")
+                return tier_num, e
+
+        with ThreadPoolExecutor(max_workers=len(tiers)) as executor:
+            futures = {executor.submit(_call_tier, tn, tc): tn for tn, tc in tiers}
+            for future in as_completed(futures):
+                tier_num, result = future.result()
+                results[tier_num] = result
+
+        return results
 
     def generate_embedding(self, text: str) -> list[float]:
         """

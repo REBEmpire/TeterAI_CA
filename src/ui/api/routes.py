@@ -447,6 +447,240 @@ def get_source_file(
 
 
 # ---------------------------------------------------------------------------
+# Submittal Review
+# ---------------------------------------------------------------------------
+
+
+class SubmittalSelectionsRequest(BaseModel):
+    selected_items: dict[str, bool]
+
+
+@router.get("/tasks/{task_id}/submittal-review", tags=["tasks"])
+def get_submittal_review(
+    task_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Return submittal review data for a task — all 3 model outputs and current item selections.
+    Only valid for tasks with document_type == SUBMITTAL.
+    """
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    doc = db.collection("submittal_reviews").document(task_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail=f"Submittal review for task {task_id} not found.")
+
+    data = doc.to_dict()
+    return {
+        "task_id": task_id,
+        "model_results": data.get("model_results", {}),
+        "selected_items": data.get("selected_items", {}),
+    }
+
+
+@router.post("/tasks/{task_id}/submittal-review/approve", tags=["tasks"])
+def approve_submittal_review(
+    task_id: str,
+    body: SubmittalSelectionsRequest,
+    current_user: Annotated[UserInfo, Depends(require_role("CA_STAFF", "ADMIN"))],
+):
+    """
+    Approve a submittal review with the selected items. Generates a formatted report,
+    files it to Drive, and transitions the task to DELIVERED.
+    """
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    task_ref = db.collection("tasks").document(task_id)
+    task = task_ref.get()
+    if not task.exists:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found.")
+    task_data = task.to_dict()
+
+    review_ref = db.collection("submittal_reviews").document(task_id)
+    review_doc = review_ref.get()
+    if not review_doc.exists:
+        raise HTTPException(status_code=404, detail=f"Submittal review for task {task_id} not found.")
+
+    review_data = review_doc.to_dict()
+    model_results = review_data.get("model_results", {})
+
+    # Persist the reviewer's selections
+    now = datetime.now(timezone.utc)
+    review_ref.update({
+        "selected_items": body.selected_items,
+        "approved_by": current_user.uid,
+        "approved_at": now.isoformat(),
+        "status": "APPROVED",
+    })
+
+    # Build the final report from selected items across all models
+    report = _build_submittal_report(model_results, body.selected_items, task_data, task_id)
+
+    # Transition task to APPROVED
+    _push_status_history(task_data, "APPROVED", "Submittal review approved by human reviewer.", current_user.uid)
+    task_ref.update({
+        "status": "APPROVED",
+        "approved_by": current_user.uid,
+        "approved_at": now.isoformat(),
+        "draft_content": report,
+        "status_history": task_data.get("status_history", []),
+    })
+
+    # Deliver to Drive
+    delivery_triggered = False
+    final_drive_path = None
+    drive = _get_drive()
+    if drive and report:
+        project_id = task_data.get("project_id") or task_data.get("project_number")
+        doc_number = task_data.get("document_number", "SUB-???")
+        dest_folder_key = "02 - Construction/Submittals"
+        try:
+            folder_id = drive.get_folder_id(project_id, dest_folder_key) if project_id else None
+            if folder_id:
+                filename = f"{doc_number}_submittal_review.md"
+                drive.upload_file(
+                    folder_id=folder_id,
+                    filename=filename,
+                    content=report.encode("utf-8"),
+                    mime_type="text/markdown",
+                )
+                final_drive_path = f"{dest_folder_key}/{filename}"
+                delivery_triggered = True
+                logger.info(f"[{task_id}] Submittal review report filed to Drive.")
+        except Exception as e:
+            logger.error(f"[{task_id}] Drive delivery failed: {e}")
+
+    # Transition to DELIVERED
+    delivered_update: dict[str, Any] = {
+        "status": "DELIVERED",
+        "delivered_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if final_drive_path:
+        delivered_update["final_drive_path"] = final_drive_path
+    _push_status_history(task_data, "DELIVERED", "Submittal review report delivered.", current_user.uid)
+    delivered_update["status_history"] = task_data.get("status_history", [])
+    task_ref.update(delivered_update)
+
+    return {"status": "DELIVERED", "task_id": task_id, "delivery_triggered": delivery_triggered}
+
+
+def _build_submittal_report(
+    model_results: dict,
+    selected_items: dict[str, bool],
+    task_data: dict,
+    task_id: str,
+) -> str:
+    """
+    Generate a markdown report from the selected review items across all model outputs.
+    Items are deduplicated by ID; if the same id appears in multiple model outputs and
+    is selected, it is included once.
+    """
+    doc_number = task_data.get("document_number", "")
+    project_number = task_data.get("project_number", "")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    lines = [
+        f"# Submittal Review Report",
+        f"**Document:** {doc_number}  ",
+        f"**Project:** {project_number}  ",
+        f"**Date:** {now}  ",
+        f"**Task ID:** {task_id}  ",
+        "",
+    ]
+
+    # Collect all selected items across tiers (deduplicate by id)
+    seen_ids: set[str] = set()
+    selected_table_items: list[dict] = []
+    selected_warnings: list[dict] = []
+    selected_missing: list[dict] = []
+    summaries: list[str] = []
+
+    for tier_key in ("tier_1", "tier_2", "tier_3"):
+        tier_data = model_results.get(tier_key, {})
+        provider = tier_data.get("provider", tier_key)
+        model = tier_data.get("model", "")
+        items = tier_data.get("items", {})
+
+        for row in items.get("comparison_table", []):
+            item_id = row.get("id", "")
+            if selected_items.get(item_id, True) and item_id not in seen_ids:
+                selected_table_items.append({**row, "_source": f"{provider}/{model}"})
+                seen_ids.add(item_id)
+
+        for warn in items.get("warnings", []):
+            item_id = warn.get("id", "")
+            if selected_items.get(item_id, True) and item_id not in seen_ids:
+                selected_warnings.append({**warn, "_source": f"{provider}/{model}"})
+                seen_ids.add(item_id)
+
+        for miss in items.get("missing_info", []):
+            item_id = miss.get("id", "")
+            if selected_items.get(item_id, True) and item_id not in seen_ids:
+                selected_missing.append({**miss, "_source": f"{provider}/{model}"})
+                seen_ids.add(item_id)
+
+        summary = items.get("summary", "")
+        if summary:
+            summaries.append(f"**{provider}/{model}:** {summary}")
+
+    # Comparison table section
+    if selected_table_items:
+        lines += [
+            "## Comparison Table",
+            "",
+            "| Category | Item | Specified | Submitted | Difference | Compliant | Severity | Comments |",
+            "|----------|------|-----------|-----------|------------|-----------|----------|----------|",
+        ]
+        for row in selected_table_items:
+            compliant_str = "Yes" if row.get("compliance") else "**No**"
+            severity = row.get("severity", "OK")
+            severity_str = f"⚠ {severity}" if severity == "MAJOR_WARNING" else severity
+            lines.append(
+                f"| {row.get('category','')} | {row.get('item','')} "
+                f"| {row.get('specified_value','')} | {row.get('submitted_value','')} "
+                f"| {row.get('difference','')} | {compliant_str} "
+                f"| {severity_str} | {row.get('comments','')} |"
+            )
+        lines.append("")
+
+    # Warnings section
+    if selected_warnings:
+        lines += ["## Major Warnings", ""]
+        for i, warn in enumerate(selected_warnings, 1):
+            lines += [
+                f"### Warning {i} — {warn.get('type', 'MAJOR_WARNING')}",
+                f"**{warn.get('description', '')}**",
+                f"",
+                f"*Recommendation:* {warn.get('recommendation', '')}",
+                f"",
+            ]
+
+    # Missing info section
+    if selected_missing:
+        lines += ["## Missing Information", ""]
+        for i, miss in enumerate(selected_missing, 1):
+            lines += [
+                f"### Missing Info {i}",
+                f"**{miss.get('description', '')}**",
+                f"",
+                f"*Recommendation:* {miss.get('recommendation', '')}",
+                f"",
+            ]
+
+    # Summaries
+    if summaries:
+        lines += ["## AI Model Summaries", ""]
+        lines += summaries
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Projects
 # ---------------------------------------------------------------------------
 

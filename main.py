@@ -25,6 +25,7 @@ def main():
     from ai_engine.gcp import GCPIntegration
     from agents.dispatcher import DispatcherAgent
     from agents.rfi import RFIAgent
+    from agents.submittal import SubmittalReviewAgent
     from knowledge_graph.client import KnowledgeGraphClient
 
     gcp = GCPIntegration()
@@ -48,6 +49,15 @@ def main():
         logger.info(f"RFI Agent processed {len(rfi_processed)} task(s): {rfi_processed}")
     else:
         logger.info("RFI Agent run complete — no assigned tasks found.")
+
+    # Phase 3: Submittal Review Agent — process tasks assigned to AGENT-SUBMITTAL-001
+    logger.info("TeterAI CA — Submittal Review Agent starting.")
+    submittal_agent = SubmittalReviewAgent(gcp=gcp, ai_engine=ai_engine, kg_client=kg_client)
+    submittal_processed = submittal_agent.run()
+    if submittal_processed:
+        logger.info(f"Submittal Agent processed {len(submittal_processed)} task(s): {submittal_processed}")
+    else:
+        logger.info("Submittal Agent run complete — no assigned tasks found.")
 
     kg_client.close()
 
