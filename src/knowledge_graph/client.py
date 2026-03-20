@@ -3,7 +3,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from neo4j import GraphDatabase
 
-from src.ai_engine.engine import engine
+from ai_engine.engine import engine
 
 logger = logging.getLogger(__name__)
 
