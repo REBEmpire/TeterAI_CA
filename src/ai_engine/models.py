@@ -10,6 +10,7 @@ class CapabilityClass(str, Enum):
     GENERATE_DOC = "GENERATE_DOC"
     EXTRACT = "EXTRACT"
     MULTIMODAL = "MULTIMODAL"
+    SUBMITTAL_REVIEW = "SUBMITTAL_REVIEW"
 
 class Attachment(BaseModel):
     file_type: str

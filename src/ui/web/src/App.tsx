@@ -7,6 +7,7 @@ import { AdminPanel } from './views/AdminPanel'
 import { Dashboard } from './views/Dashboard'
 import { LoginPage } from './views/LoginPage'
 import { SplitViewer } from './views/SplitViewer'
+import { SubmittalReviewViewer } from './views/SubmittalReviewViewer'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -36,6 +37,7 @@ function AppRoutes() {
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/tasks/:taskId" element={<SplitViewer />} />
+        <Route path="/tasks/:taskId/submittal" element={<SubmittalReviewViewer />} />
         <Route
           path="/admin"
           element={

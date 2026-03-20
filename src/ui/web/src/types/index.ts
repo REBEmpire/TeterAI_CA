@@ -124,3 +124,51 @@ export interface TokenResponse {
   token_type: string
   user: UserInfo
 }
+
+// ---------------------------------------------------------------------------
+// Submittal Review types
+// ---------------------------------------------------------------------------
+
+export type ReviewItemSeverity = 'OK' | 'MINOR_NOTE' | 'MAJOR_WARNING'
+export type WarningType = 'MAJOR_WARNING' | 'MISSING_INFO_WARNING'
+
+export interface SubmittalComparisonItem {
+  id: string
+  category: string
+  item: string
+  specified_value: string
+  submitted_value: string
+  difference: string
+  compliance: boolean
+  severity: ReviewItemSeverity
+  comments: string
+}
+
+export interface SubmittalWarningItem {
+  id: string
+  type: WarningType
+  description: string
+  recommendation: string
+}
+
+export interface SubmittalModelResult {
+  provider: string
+  model: string
+  error?: string
+  items: {
+    comparison_table: SubmittalComparisonItem[]
+    warnings: SubmittalWarningItem[]
+    missing_info: SubmittalWarningItem[]
+    summary: string
+  }
+}
+
+export interface SubmittalReviewData {
+  task_id: string
+  model_results: {
+    tier_1?: SubmittalModelResult
+    tier_2?: SubmittalModelResult
+    tier_3?: SubmittalModelResult
+  }
+  selected_items: Record<string, boolean>
+}

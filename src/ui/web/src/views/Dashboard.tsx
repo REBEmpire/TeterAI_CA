@@ -228,7 +228,11 @@ export function Dashboard() {
             <TaskCard
               key={task.task_id}
               task={task}
-              onClick={() => navigate(`/tasks/${task.task_id}`)}
+              onClick={() =>
+                task.document_type === 'SUBMITTAL'
+                  ? navigate(`/tasks/${task.task_id}/submittal`)
+                  : navigate(`/tasks/${task.task_id}`)
+              }
             />
           ))}
         </div>
