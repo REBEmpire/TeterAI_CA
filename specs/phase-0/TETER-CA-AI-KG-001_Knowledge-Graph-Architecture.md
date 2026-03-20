@@ -231,7 +231,7 @@ All node types with text content (`content_summary`, `text`, `description`, `dec
 
 ```cypher
 // Each embeddable node has an additional property:
-embedding: [Float]           // 1536-dimension vector (text-embedding-3-small or equivalent)
+embedding: [Float]           // 768-dimension vector (vertex_ai/text-embedding-004)
 embedding_model: String      // model used for traceability
 embedding_updated_at: DateTime
 ```
@@ -342,7 +342,7 @@ class KnowledgeGraphClient:
 
 | # | Question | Owner | Status |
 |---|----------|-------|--------|
-| 1 | Which embedding model to use? (Prefer same provider as Tier 1 AI calls for cost consolidation) | Tech Lead | Open |
+| 1 | Which embedding model to use? (vertex_ai/text-embedding-004 chosen) | Tech Lead | Closed |
 | 2 | How granular should Tier 4 spec content be — full text or summaries only? | CA Director | Open |
 | 3 | What triggers a Tier 1 playbook update from correction events — manual review or automatic? | Product | Open |
 

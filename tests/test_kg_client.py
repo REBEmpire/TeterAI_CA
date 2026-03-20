@@ -38,7 +38,7 @@ def test_kg_get_document_workflow(mock_env, mock_driver):
     assert steps[0]["step_id"] == "RFI-01"
     assert steps[1]["name"] == "Review"
 
-@patch('src.ai_engine.engine.AIEngine.generate_embedding')
+@patch('src.knowledge_graph.client.engine.generate_embedding')
 @patch('os.environ.get')
 def test_kg_search_spec_sections(mock_env, mock_embed, mock_driver):
     mock_env.side_effect = lambda k, default=None: "value" if k in ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"] else default
