@@ -116,7 +116,7 @@ class TestDispatcherRouter:
         assert "document_type" in decision.reason
 
     def test_non_rfi_type_escalates(self):
-        result = make_classification(doc_type_value="SUBMITTAL")
+        result = make_classification(doc_type_value="PAY_APP")
         decision = self.router.route(result)
         assert decision.action == "ESCALATE_TO_HUMAN"
         assert decision.assigned_agent is None
@@ -133,8 +133,8 @@ class TestDispatcherRouter:
         assert decision.action == "ESCALATE_TO_HUMAN"
         assert "RFI/bid" in decision.reason
 
-    def test_all_confident_submittal_escalates_no_agent(self):
-        result = make_classification(doc_type_value="SUBMITTAL")
+    def test_all_confident_pay_app_escalates_no_agent(self):
+        result = make_classification(doc_type_value="PAY_APP")
         decision = self.router.route(result)
         assert decision.action == "ESCALATE_TO_HUMAN"
         assert decision.all_confident is True  # confident but no agent configured

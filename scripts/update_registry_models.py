@@ -47,6 +47,11 @@ def update_models():
                 tier_1=ModelConfig(provider="anthropic", model="claude-opus-4-6", max_tokens=4096),
                 tier_2=ModelConfig(provider="google", model="gemini-3.1-pro-preview", max_tokens=4096),
                 tier_3=ModelConfig(provider="xai", model="grok-4.20-multi-agent-beta-0309", max_tokens=4096)
+            ),
+            CapabilityClass.SUBMITTAL_REVIEW: CapabilityConfig(
+                tier_1=ModelConfig(provider="anthropic", model="claude-sonnet-4-6", max_tokens=8192),
+                tier_2=ModelConfig(provider="google", model="gemini-3.1-pro-preview", max_tokens=8192),
+                tier_3=ModelConfig(provider="xai", model="grok-4-1-fast-reasoning", max_tokens=8192)
             )
         }
     )
