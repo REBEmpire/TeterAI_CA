@@ -103,19 +103,19 @@ export function SplitViewer() {
         <div className="p-4 overflow-auto h-full">
           {email ? (
             <div className="flex flex-col gap-3 text-sm">
-              {email['from'] && (
+              {!!email['from'] && (
                 <div>
                   <span className="label">From</span>
                   <p className="text-teter-dark">{String(email['from'])}</p>
                 </div>
               )}
-              {email['subject'] && (
+              {!!email['subject'] && (
                 <div>
                   <span className="label">Subject</span>
                   <p className="text-teter-dark font-semibold">{String(email['subject'])}</p>
                 </div>
               )}
-              {email['date'] && (
+              {!!email['date'] && (
                 <div>
                   <span className="label">Date</span>
                   <p className="text-teter-gray-text">{String(email['date'])}</p>

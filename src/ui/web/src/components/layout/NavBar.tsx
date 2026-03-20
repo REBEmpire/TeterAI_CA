@@ -44,10 +44,7 @@ export function NavBar() {
         {/* Nav links */}
         <nav className="flex items-center gap-1">
           {navLink('/dashboard', 'Action Dashboard')}
-          <RoleGuard roles={['CA_STAFF', 'ADMIN']}>
-            {/* Split Viewer is accessed via task cards, not nav */}
-          </RoleGuard>
-          <RoleGuard roles={['ADMIN']}>
+<RoleGuard roles={['ADMIN']}>
             {navLink('/admin', 'Admin')}
           </RoleGuard>
         </nav>
