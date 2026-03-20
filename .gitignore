@@ -38,6 +38,9 @@ gcp-credentials.json
 *.json
 !pyproject.toml
 !uv.lock
+# Node
+node_modules/
+
 # Allow web/mobile frontend JSON config files
 !src/ui/web/package.json
 !src/ui/web/package-lock.json
