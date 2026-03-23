@@ -6,11 +6,13 @@ Mounts on the FastAPI app in server.py.
 import csv
 import io
 import logging
+import os
+import secrets
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from ai_engine.gcp import GCPIntegration
@@ -128,6 +130,102 @@ def password_login(body: PasswordLoginRequest):
 def get_me(current_user: Annotated[UserInfo, Depends(require_auth)]):
     """Return the currently authenticated user's info and role."""
     return current_user
+
+
+# ---------------------------------------------------------------------------
+# Gmail OAuth setup (admin only)
+# ---------------------------------------------------------------------------
+
+_GMAIL_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.modify",
+]
+
+# In-memory state store for CSRF protection (admin-only, low-traffic endpoint)
+_gmail_oauth_states: set[str] = set()
+
+
+def _build_gmail_flow():
+    client_id = _gcp.get_secret("integrations/gmail/oauth-client-id") or os.environ.get("GMAIL_OAUTH_CLIENT_ID")
+    client_secret = _gcp.get_secret("integrations/gmail/oauth-client-secret") or os.environ.get("GMAIL_OAUTH_CLIENT_SECRET")
+    redirect_uri = os.environ.get(
+        "GMAIL_OAUTH_REDIRECT_URI",
+        "https://teterai-ca.run.app/api/v1/auth/gmail/callback",
+    )
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=503, detail="Gmail OAuth credentials not configured.")
+
+    from google_auth_oauthlib.flow import Flow
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [redirect_uri],
+            }
+        },
+        scopes=_GMAIL_SCOPES,
+    )
+    flow.redirect_uri = redirect_uri
+    return flow
+
+
+@router.get(
+    "/auth/gmail/authorize",
+    tags=["auth"],
+    dependencies=[Depends(require_role("ADMIN"))],
+)
+def gmail_authorize():
+    """
+    Start the Gmail OAuth flow. Redirects to Google's consent screen.
+    Requires ADMIN role. Visit this endpoint in a browser while authenticated.
+    """
+    flow = _build_gmail_flow()
+    state = secrets.token_urlsafe(32)
+    _gmail_oauth_states.add(state)
+    auth_url, _ = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        state=state,
+    )
+    return RedirectResponse(url=auth_url)
+
+
+@router.get("/auth/gmail/callback", tags=["auth"])
+def gmail_callback(code: str = Query(...), state: str = Query(...)):
+    """
+    Handle the Gmail OAuth callback from Google.
+    Exchanges the authorization code for tokens and returns the refresh token.
+    Store the returned refresh_token in GCP Secret Manager at:
+      integrations/gmail/oauth-refresh-token
+    """
+    if state not in _gmail_oauth_states:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state.")
+    _gmail_oauth_states.discard(state)
+
+    flow = _build_gmail_flow()
+    flow.fetch_token(code=code)
+    credentials = flow.credentials
+
+    if not credentials.refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No refresh token returned. The account may have already authorized this app. "
+                "Revoke access at https://myaccount.google.com/permissions and try again."
+            ),
+        )
+
+    logger.info("Gmail OAuth refresh token obtained successfully.")
+    return {
+        "message": (
+            "Gmail authorized. Copy refresh_token to GCP Secret Manager at "
+            "integrations/gmail/oauth-refresh-token."
+        ),
+        "refresh_token": credentials.refresh_token,
+    }
 
 
 # ---------------------------------------------------------------------------
