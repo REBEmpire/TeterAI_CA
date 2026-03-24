@@ -156,6 +156,22 @@ class DriveService:
             _, done = downloader.next_chunk()
         return buf.getvalue(), mime_type
 
+    def list_folder_files(self, folder_id: str) -> list[dict]:
+        """Returns list of {id, name, mimeType} dicts for all non-trashed files in the given folder."""
+        results = []
+        page_token = None
+        while True:
+            resp = self.service.files().list(
+                q=f"'{folder_id}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'",
+                fields="nextPageToken, files(id, name, mimeType)",
+                pageToken=page_token
+            ).execute()
+            results.extend(resp.get('files', []))
+            page_token = resp.get('nextPageToken')
+            if not page_token:
+                break
+        return results
+
     def next_doc_number(self, project_id: str, doc_type: str) -> int:
         """Atomically increments the document counter in Firestore."""
         if not self.db:
