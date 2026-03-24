@@ -185,4 +185,115 @@ class KnowledgeGraphClient:
                 "reviewed_by": reviewed_by,
             })
 
+    def setup_rfi_schema(self) -> None:
+        """Creates Project and RFI constraints and vector index. Idempotent."""
+        if not self._driver:
+            return
+
+        with self._driver.session() as session:
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:Project) REQUIRE p.project_id IS UNIQUE")
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (r:RFI) REQUIRE r.rfi_id IS UNIQUE")
+            session.run("""
+            CREATE VECTOR INDEX rfi_embeddings IF NOT EXISTS
+            FOR (n:RFI) ON (n.embedding)
+            OPTIONS {indexConfig: {
+                `vector.dimensions`: 768,
+                `vector.similarity_function`: 'cosine'
+            }}
+            """)
+            session.run("CALL db.awaitIndexes(120)")
+
+    def search_rfis(self, query: str, top_k: int = 5, project_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Semantic search across ingested RFI questions. Optionally filter by project_id."""
+        if not self._driver:
+            return []
+
+        try:
+            query_vector = engine.generate_embedding(query)
+        except Exception as e:
+            logger.error(f"Failed to generate embedding for RFI search: {e}")
+            return []
+
+        threshold = float(os.environ.get("KG_EMBEDDING_SIMILARITY_THRESHOLD", 0.75))
+
+        cypher = """
+        CALL db.index.vector.queryNodes('rfi_embeddings', $top_k, $query_vector)
+        YIELD node, score
+        WHERE score > $threshold
+          AND ($project_id IS NULL OR node.project_id = $project_id)
+        RETURN node.rfi_id AS rfi_id,
+               node.project_id AS project_id,
+               node.rfi_number AS rfi_number,
+               node.contractor_name AS contractor_name,
+               node.question AS question,
+               node.response_text AS response_text,
+               node.status AS status,
+               node.date_submitted AS date_submitted,
+               score
+        ORDER BY score DESC
+        """
+
+        with self._driver.session() as session:
+            result = session.run(
+                cypher,
+                top_k=top_k,
+                query_vector=query_vector,
+                threshold=threshold,
+                project_id=project_id
+            )
+            return [record.data() for record in result]
+
+    def find_rfi_patterns(self) -> Dict[str, Any]:
+        """
+        Finds cross-project RFI patterns:
+        - Spec sections referenced in RFIs across multiple projects
+        - Per-project RFI counts
+        - Total ingested RFI count
+        """
+        if not self._driver:
+            return {}
+
+        with self._driver.session() as session:
+            # Spec sections cited in RFIs from more than one project
+            cross_project_specs = session.run("""
+            MATCH (r:RFI)-[:REFERENCES_SPEC]->(s:SpecSection)
+            WITH s.section_number AS section,
+                 s.title AS title,
+                 collect(DISTINCT r.project_id) AS projects,
+                 count(r) AS rfi_count
+            WHERE size(projects) > 1
+            RETURN section, title, projects, rfi_count
+            ORDER BY rfi_count DESC
+            """)
+
+            # Per-project RFI counts
+            project_counts = session.run("""
+            MATCH (p:Project)-[:HAS_RFI]->(r:RFI)
+            RETURN p.project_id AS project_id,
+                   p.project_name AS project_name,
+                   count(r) AS rfi_count
+            ORDER BY rfi_count DESC
+            """)
+
+            # All spec section citation counts (single + multi project)
+            all_spec_citations = session.run("""
+            MATCH (r:RFI)-[:REFERENCES_SPEC]->(s:SpecSection)
+            RETURN s.section_number AS section,
+                   s.title AS title,
+                   collect(DISTINCT r.project_id) AS projects,
+                   count(r) AS rfi_count
+            ORDER BY rfi_count DESC
+            LIMIT 20
+            """)
+
+            total_rfis = session.run("MATCH (r:RFI) RETURN count(r) AS c").single()["c"]
+
+            return {
+                "total_rfis": total_rfis,
+                "project_counts": [record.data() for record in project_counts],
+                "cross_project_spec_patterns": [record.data() for record in cross_project_specs],
+                "top_spec_citations": [record.data() for record in all_spec_citations],
+            }
+
+
 kg_client = KnowledgeGraphClient()
