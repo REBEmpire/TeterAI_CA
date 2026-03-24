@@ -54,6 +54,19 @@ class DriveService:
 
     def _get_drive_service(self):
         secret_json = gcp_integration.get_secret('drive-service-account')
+
+        # Fall back to env var or GOOGLE_APPLICATION_CREDENTIALS file when
+        # Secret Manager is unreachable (e.g. sandbox proxy blocks gRPC).
+        if not secret_json:
+            env_json = os.environ.get('DRIVE_SERVICE_ACCOUNT_JSON')
+            if env_json:
+                secret_json = env_json
+            else:
+                creds_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+                if creds_path and os.path.exists(creds_path):
+                    with open(creds_path) as f:
+                        secret_json = f.read()
+
         if not secret_json:
             raise ValueError("Could not load drive-service-account from Secret Manager")
 
