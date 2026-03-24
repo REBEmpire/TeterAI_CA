@@ -224,7 +224,7 @@ def upsert_rfi_to_kg(session, project: dict, rfi_data: dict, file_id: str, file_
     return rfi_id
 
 
-def ingest_project(project: dict, drive: DriveService, neo4j_session, dry_run: bool) -> dict:
+def ingest_project(project: dict, drive: DriveService, neo4j_session, dry_run: bool, limit: int = 0) -> dict:
     """Ingest all RFIs for one project. Returns counts dict."""
     project_id = project["project_id"]
     project_name = project["project_name"]
@@ -249,7 +249,10 @@ def ingest_project(project: dict, drive: DriveService, neo4j_session, dry_run: b
         return counts
 
     counts["found"] = len(files)
-    print(f"  Found {len(files)} file(s) in '{RFI_FOLDER_PATH}'")
+    if limit:
+        files = files[:limit]
+    print(f"  Found {counts['found']} file(s) in '{RFI_FOLDER_PATH}'"
+          + (f" (processing first {limit})" if limit else ""))
 
     if dry_run:
         for f in files:
@@ -280,7 +283,7 @@ def ingest_project(project: dict, drive: DriveService, neo4j_session, dry_run: b
                 counts["skipped"] += 1
                 continue
 
-            rfi_number = rfi_data.get("rfi_number", "UNKNOWN")
+            rfi_number = str(rfi_data.get("rfi_number", "UNKNOWN")).strip()
             logger.info(f"    Extracted RFI #{rfi_number}: {rfi_data.get('status', 'open')}")
 
             # Generate embedding from the question text
@@ -308,6 +311,7 @@ def main():
     parser = argparse.ArgumentParser(description="Ingest RFI documents from Google Drive into the Knowledge Graph.")
     parser.add_argument("--dry-run", action="store_true", help="List files only; do not write to KG")
     parser.add_argument("--project", metavar="PROJECT_ID", help="Ingest a single project (e.g. 11900)")
+    parser.add_argument("--limit", type=int, default=0, metavar="N", help="Max files per project (default: all)")
     args = parser.parse_args()
 
     # Load secrets
@@ -353,7 +357,7 @@ def main():
             total_counts = {"found": 0, "ingested": 0, "skipped": 0, "errors": 0}
 
             for project in projects:
-                counts = ingest_project(project, drive, session, args.dry_run)
+                counts = ingest_project(project, drive, session, args.dry_run, limit=args.limit)
                 for k in total_counts:
                     total_counts[k] += counts[k]
 

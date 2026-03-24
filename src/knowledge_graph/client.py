@@ -243,6 +243,29 @@ class KnowledgeGraphClient:
             )
             return [record.data() for record in result]
 
+    def get_project_rfis(self, project_id: str) -> List[Dict[str, Any]]:
+        """Get all ingested RFIs for a project, ordered by RFI number."""
+        if not self._driver:
+            return []
+
+        cypher = """
+        MATCH (p:Project {project_id: $project_id})-[:HAS_RFI]->(r:RFI)
+        RETURN r.rfi_id AS rfi_id,
+               r.rfi_number AS rfi_number,
+               r.contractor_name AS contractor_name,
+               r.question AS question,
+               r.response_text AS response_text,
+               r.status AS status,
+               r.date_submitted AS date_submitted,
+               r.referenced_spec_sections AS referenced_spec_sections,
+               r.source_file_name AS source_file_name
+        ORDER BY r.rfi_number ASC
+        """
+
+        with self._driver.session() as session:
+            result = session.run(cypher, project_id=project_id)
+            return [record.data() for record in result]
+
     def find_rfi_patterns(self) -> Dict[str, Any]:
         """
         Finds cross-project RFI patterns:

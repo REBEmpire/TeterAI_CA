@@ -162,7 +162,7 @@ class DriveService:
         page_token = None
         while True:
             resp = self.service.files().list(
-                q=f"'{folder_id}' in parents and trashed=false",
+                q=f"'{folder_id}' in parents and trashed=false and mimeType != 'application/vnd.google-apps.folder'",
                 fields="nextPageToken, files(id, name, mimeType)",
                 pageToken=page_token
             ).execute()
