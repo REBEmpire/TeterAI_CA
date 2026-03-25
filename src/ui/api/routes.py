@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
-from ai_engine.gcp import GCPIntegration
+from ai_engine.gcp import gcp_integration
 from audit.logger import AuditLogger
 from audit.models import HumanReviewAction, HumanReviewLog
 
@@ -40,11 +40,13 @@ from .models import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+_DESKTOP_MODE = os.environ.get("DESKTOP_MODE", "").lower() in ("true", "1")
+
 # ---------------------------------------------------------------------------
-# Shared GCP dependency
+# Shared storage/DB dependency (supports both cloud and desktop mode)
 # ---------------------------------------------------------------------------
 
-_gcp = GCPIntegration()
+_gcp = gcp_integration
 _audit = AuditLogger(_gcp)
 
 
@@ -53,12 +55,12 @@ def _db():
 
 
 def _get_drive():
-    """Lazy singleton for DriveService; returns None if Drive is not configured."""
+    """Return storage service (LocalStorageService in desktop mode, DriveService in cloud)."""
     try:
-        from integrations.drive.service import DriveService
-        return DriveService()
+        from storage import get_storage_service
+        return get_storage_service(db_client=_db())
     except Exception as e:
-        logger.warning(f"DriveService unavailable: {e}")
+        logger.warning(f"Storage service unavailable: {e}")
         return None
 
 
@@ -133,19 +135,19 @@ def get_me(current_user: Annotated[UserInfo, Depends(require_auth)]):
 
 
 # ---------------------------------------------------------------------------
-# Gmail OAuth setup (admin only)
+# Gmail OAuth setup — disabled in desktop mode; available in cloud mode only
 # ---------------------------------------------------------------------------
 
 _GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
 ]
-
-# In-memory state store for CSRF protection (admin-only, low-traffic endpoint)
 _gmail_oauth_states: set[str] = set()
 
 
 def _build_gmail_flow():
+    if _DESKTOP_MODE:
+        raise HTTPException(status_code=501, detail="Gmail OAuth is not available in desktop mode. Use the inbox folder or file upload instead.")
     client_id = _gcp.get_secret("integrations/gmail/oauth-client-id") or os.environ.get("GMAIL_OAUTH_CLIENT_ID")
     client_secret = _gcp.get_secret("integrations/gmail/oauth-client-secret") or os.environ.get("GMAIL_OAUTH_CLIENT_SECRET")
     redirect_uri = os.environ.get(
@@ -154,78 +156,42 @@ def _build_gmail_flow():
     )
     if not client_id or not client_secret:
         raise HTTPException(status_code=503, detail="Gmail OAuth credentials not configured.")
-
     from google_auth_oauthlib.flow import Flow
     flow = Flow.from_client_config(
-        {
-            "web": {
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": [redirect_uri],
-            }
-        },
+        {"web": {"client_id": client_id, "client_secret": client_secret,
+                 "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                 "token_uri": "https://oauth2.googleapis.com/token",
+                 "redirect_uris": [redirect_uri]}},
         scopes=_GMAIL_SCOPES,
     )
     flow.redirect_uri = redirect_uri
     return flow
 
 
-@router.get(
-    "/auth/gmail/authorize",
-    tags=["auth"],
-    dependencies=[Depends(require_role("ADMIN"))],
-)
+@router.get("/auth/gmail/authorize", tags=["auth"], dependencies=[Depends(require_role("ADMIN"))])
 def gmail_authorize():
-    """
-    Start the Gmail OAuth flow. Redirects to Google's consent screen.
-    Requires ADMIN role. Visit this endpoint in a browser while authenticated.
-    """
+    """Start the Gmail OAuth flow (cloud mode only)."""
     flow = _build_gmail_flow()
     state = secrets.token_urlsafe(32)
     _gmail_oauth_states.add(state)
-    auth_url, _ = flow.authorization_url(
-        access_type="offline",
-        prompt="consent",
-        state=state,
-    )
+    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent", state=state)
     return RedirectResponse(url=auth_url)
 
 
 @router.get("/auth/gmail/callback", tags=["auth"])
 def gmail_callback(code: str = Query(...), state: str = Query(...)):
-    """
-    Handle the Gmail OAuth callback from Google.
-    Exchanges the authorization code for tokens and returns the refresh token.
-    Store the returned refresh_token in GCP Secret Manager at:
-      integrations/gmail/oauth-refresh-token
-    """
+    """Handle the Gmail OAuth callback (cloud mode only)."""
+    if _DESKTOP_MODE:
+        raise HTTPException(status_code=501, detail="Gmail OAuth is not available in desktop mode.")
     if state not in _gmail_oauth_states:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state.")
     _gmail_oauth_states.discard(state)
-
     flow = _build_gmail_flow()
     flow.fetch_token(code=code)
     credentials = flow.credentials
-
     if not credentials.refresh_token:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "No refresh token returned. The account may have already authorized this app. "
-                "Revoke access at https://myaccount.google.com/permissions and try again."
-            ),
-        )
-
-    logger.info("Gmail OAuth refresh token obtained successfully.")
-    return {
-        "message": (
-            "Gmail authorized. Copy refresh_token to GCP Secret Manager at "
-            "integrations/gmail/oauth-refresh-token."
-        ),
-        "refresh_token": credentials.refresh_token,
-    }
+        raise HTTPException(status_code=400, detail="No refresh token returned.")
+    return {"message": "Gmail authorized.", "refresh_token": credentials.refresh_token}
 
 
 # ---------------------------------------------------------------------------
@@ -346,37 +312,37 @@ def approve_task(
     update["status_history"] = task_data.get("status_history", [])
     task_ref.update(update)
 
-    # --- Delivery: file the approved draft to Drive and transition to DELIVERED ---
+    # --- Delivery: file the approved draft to storage and transition to DELIVERED ---
     delivery_triggered = False
-    final_drive_path = None
-    drive = _get_drive()
-    if drive and final_draft:
+    final_file_path = None
+    storage = _get_drive()
+    if storage and final_draft:
         project_id = task_data.get("project_id") or task_data.get("project_number")
         doc_number = task_data.get("document_number", "RFI-???")
         doc_type = task_data.get("document_type", "RFI")
         dest_folder_key = "02 - Construction/RFIs" if doc_type == "RFI" else "04 - Agent Workspace/Thought Chains"
         try:
-            folder_id = drive.get_folder_id(project_id, dest_folder_key) if project_id else None
+            folder_id = storage.get_folder_id(project_id, dest_folder_key) if project_id else None
             if folder_id:
                 filename = f"{doc_number}_approved_response.md"
-                drive_file_id = drive.upload_file(
+                file_ref = storage.upload_file(
                     folder_id=folder_id,
                     filename=filename,
                     content=final_draft.encode("utf-8"),
                     mime_type="text/markdown",
                 )
-                final_drive_path = f"{dest_folder_key}/{filename}"
+                final_file_path = f"{dest_folder_key}/{filename}"
                 delivery_triggered = True
-                logger.info(f"[{task_id}] Approved draft filed to Drive: {drive_file_id}")
+                logger.info(f"[{task_id}] Approved draft filed: {file_ref}")
             else:
-                logger.warning(f"[{task_id}] Drive folder '{dest_folder_key}' not found for project '{project_id}' — skipping file delivery.")
+                logger.warning(f"[{task_id}] Folder '{dest_folder_key}' not found for project '{project_id}' — skipping file delivery.")
         except Exception as e:
-            logger.error(f"[{task_id}] Drive delivery failed: {e}")
+            logger.error(f"[{task_id}] File delivery failed: {e}")
 
     # Transition to DELIVERED
     delivered_update: dict[str, Any] = {"status": "DELIVERED", "delivered_at": datetime.now(timezone.utc).isoformat()}
-    if final_drive_path:
-        delivered_update["final_drive_path"] = final_drive_path
+    if final_file_path:
+        delivered_update["final_drive_path"] = final_file_path
     _push_status_history(task_data, "DELIVERED", "Delivered after approval.", current_user.uid)
     delivered_update["status_history"] = task_data.get("status_history", [])
     task_ref.update(delivered_update)
@@ -654,19 +620,19 @@ def approve_submittal_review(
         "status_history": task_data.get("status_history", []),
     })
 
-    # Deliver to Drive
+    # Deliver to storage (local folder or Drive depending on mode)
     delivery_triggered = False
     final_drive_path = None
-    drive = _get_drive()
-    if drive and report:
+    storage = _get_drive()
+    if storage and report:
         project_id = task_data.get("project_id") or task_data.get("project_number")
         doc_number = task_data.get("document_number", "SUB-???")
         dest_folder_key = "02 - Construction/Submittals"
         try:
-            folder_id = drive.get_folder_id(project_id, dest_folder_key) if project_id else None
+            folder_id = storage.get_folder_id(project_id, dest_folder_key) if project_id else None
             if folder_id:
                 filename = f"{doc_number}_submittal_review.md"
-                drive.upload_file(
+                storage.upload_file(
                     folder_id=folder_id,
                     filename=filename,
                     content=report.encode("utf-8"),
@@ -674,9 +640,9 @@ def approve_submittal_review(
                 )
                 final_drive_path = f"{dest_folder_key}/{filename}"
                 delivery_triggered = True
-                logger.info(f"[{task_id}] Submittal review report filed to Drive.")
+                logger.info(f"[{task_id}] Submittal review report filed.")
         except Exception as e:
-            logger.error(f"[{task_id}] Drive delivery failed: {e}")
+            logger.error(f"[{task_id}] File delivery failed: {e}")
 
     # Transition to DELIVERED
     delivered_update: dict[str, Any] = {
@@ -1140,3 +1106,149 @@ def _parse_dt(value) -> Optional[datetime]:
         return datetime.fromisoformat(str(value))
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Desktop Settings (DESKTOP_MODE only)
+# ---------------------------------------------------------------------------
+
+class DesktopSettingsResponse(BaseModel):
+    anthropic_api_key: str = ""
+    google_api_key: str = ""
+    xai_api_key: str = ""
+    neo4j_uri: str = ""
+    neo4j_username: str = ""
+    projects_root: str = ""
+    db_path: str = ""
+    inbox_path: str = ""
+    poll_interval_seconds: int = 30
+    neo4j_connected: bool = False
+    desktop_mode: bool = True
+
+
+class DesktopSettingsUpdate(BaseModel):
+    anthropic_api_key: Optional[str] = None
+    google_api_key: Optional[str] = None
+    xai_api_key: Optional[str] = None
+    neo4j_uri: Optional[str] = None
+    neo4j_username: Optional[str] = None
+    neo4j_password: Optional[str] = None
+    projects_root: Optional[str] = None
+    inbox_path: Optional[str] = None
+    poll_interval_seconds: Optional[int] = None
+
+
+@router.get("/settings", response_model=DesktopSettingsResponse, tags=["desktop"])
+def get_settings(current_user: Annotated[UserInfo, Depends(require_auth)]):
+    """Return current desktop configuration (desktop mode only)."""
+    if not _DESKTOP_MODE:
+        raise HTTPException(status_code=404, detail="Settings endpoint is only available in desktop mode.")
+
+    from config.local_config import LocalConfig
+    cfg = LocalConfig.ensure_exists()
+
+    neo4j_connected = False
+    if cfg.neo4j_uri:
+        try:
+            from knowledge_graph.client import KnowledgeGraphClient
+            kg = KnowledgeGraphClient()
+            neo4j_connected = kg.is_connected()
+        except Exception:
+            pass
+
+    return DesktopSettingsResponse(
+        anthropic_api_key="***" if cfg.anthropic_api_key else "",
+        google_api_key="***" if cfg.google_api_key else "",
+        xai_api_key="***" if cfg.xai_api_key else "",
+        neo4j_uri=cfg.neo4j_uri,
+        neo4j_username=cfg.neo4j_username,
+        projects_root=cfg.projects_root,
+        db_path=cfg.db_path,
+        inbox_path=cfg.inbox_path,
+        poll_interval_seconds=cfg.poll_interval_seconds,
+        neo4j_connected=neo4j_connected,
+        desktop_mode=True,
+    )
+
+
+@router.post("/settings", tags=["desktop"])
+def update_settings(
+    body: DesktopSettingsUpdate,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Update desktop configuration and persist to ~/.teterai/config.env."""
+    if not _DESKTOP_MODE:
+        raise HTTPException(status_code=404, detail="Settings endpoint is only available in desktop mode.")
+
+    from config.local_config import LocalConfig
+    cfg = LocalConfig.ensure_exists()
+
+    if body.anthropic_api_key is not None:
+        cfg.anthropic_api_key = body.anthropic_api_key
+    if body.google_api_key is not None:
+        cfg.google_api_key = body.google_api_key
+    if body.xai_api_key is not None:
+        cfg.xai_api_key = body.xai_api_key
+    if body.neo4j_uri is not None:
+        cfg.neo4j_uri = body.neo4j_uri
+    if body.neo4j_username is not None:
+        cfg.neo4j_username = body.neo4j_username
+    if body.neo4j_password is not None:
+        cfg.neo4j_password = body.neo4j_password
+    if body.projects_root is not None:
+        cfg.projects_root = body.projects_root
+    if body.inbox_path is not None:
+        cfg.inbox_path = body.inbox_path
+    if body.poll_interval_seconds is not None:
+        cfg.poll_interval_seconds = body.poll_interval_seconds
+
+    cfg.save()
+    cfg.push_to_env()
+    return {"status": "saved"}
+
+
+# ---------------------------------------------------------------------------
+# File Upload / Manual Ingest (desktop mode)
+# ---------------------------------------------------------------------------
+
+@router.post("/ingest/upload", tags=["desktop"])
+async def upload_ingest(
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+    file: "UploadFile" = None,
+):
+    """
+    Accept a file upload (PDF, DOCX, EML) and create an email_ingest record.
+    Triggers the agent pipeline just like a folder-watch ingest.
+    """
+    from fastapi import UploadFile
+    if file is None:
+        raise HTTPException(status_code=422, detail="No file provided.")
+
+    if not _DESKTOP_MODE:
+        raise HTTPException(status_code=404, detail="Upload endpoint is only available in desktop mode.")
+
+    from config.local_config import LocalConfig
+    from integrations.local_inbox.watcher import LocalInboxWatcher
+    import shutil
+
+    cfg = LocalConfig.ensure_exists()
+    inbox = __import__("pathlib").Path(cfg.inbox_path).expanduser()
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    dest = inbox / file.filename
+    content = await file.read()
+    dest.write_bytes(content)
+
+    watcher = LocalInboxWatcher(cfg, _db())
+    ingest_id = watcher._process_file(dest)
+
+    if ingest_id:
+        watcher._processed_paths.add(str(dest))
+        _db().collection("processed_emails").document(ingest_id).set({
+            "message_id": ingest_id,
+            "local_path": str(dest),
+            "processed_at": datetime.now(timezone.utc).isoformat(),
+            "task_id": None,
+        })
+
+    return {"ingest_id": ingest_id, "filename": file.filename, "status": "queued"}

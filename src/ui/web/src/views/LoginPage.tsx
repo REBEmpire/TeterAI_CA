@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Navigate, useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { ApiError } from '../api/client'
+
+const DESKTOP_MODE = import.meta.env.VITE_DESKTOP_MODE === 'true'
 
 declare global {
   interface Window {
@@ -20,9 +22,14 @@ const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID ?? ''
 
 /**
  * Login page — branded Teter dark background with username/password form.
+ * In DESKTOP_MODE this page is never shown; the app auto-redirects to /dashboard.
  * Google Sign-In is shown only when VITE_GOOGLE_CLIENT_ID is configured.
  */
 export function LoginPage() {
+  // Desktop mode: skip login entirely
+  if (DESKTOP_MODE) {
+    return <Navigate to="/dashboard" replace />
+  }
   const { user, login, loginPassword } = useAuth()
   const navigate = useNavigate()
   const btnRef = useRef<HTMLDivElement>(null)

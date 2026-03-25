@@ -1,0 +1,41 @@
+{
+  "version": "desktop-default-1.0",
+  "updated_at": "2026-03-25T00:00:00Z",
+  "capability_classes": {
+    "REASON_DEEP": {
+      "tier_1": {"provider": "anthropic", "model": "claude-opus-4-6", "max_tokens": 4096},
+      "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 4096},
+      "tier_3": {"provider": "xai", "model": "xai/grok-3", "max_tokens": 4096}
+    },
+    "REASON_STANDARD": {
+      "tier_1": {"provider": "anthropic", "model": "claude-sonnet-4-6", "max_tokens": 4096},
+      "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 4096},
+      "tier_3": {"provider": "xai", "model": "xai/grok-3-mini", "max_tokens": 4096}
+    },
+    "CLASSIFY": {
+      "tier_1": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001", "max_tokens": 1024},
+      "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 1024},
+      "tier_3": {"provider": "xai", "model": "xai/grok-3-mini", "max_tokens": 1024}
+    },
+    "GENERATE_DOC": {
+      "tier_1": {"provider": "anthropic", "model": "claude-sonnet-4-6", "max_tokens": 8192},
+      "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 8192},
+      "tier_3": {"provider": "xai", "model": "xai/grok-3", "max_tokens": 8192}
+    },
+    "EXTRACT": {
+      "tier_1": {"provider": "anthropic", "model": "claude-haiku-4-5-20251001", "max_tokens": 2048},
+      "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 2048},
+      "tier_3": {"provider": "xai", "model": "xai/grok-3-mini", "max_tokens": 2048}
+    },
+    "MULTIMODAL": {
+      "tier_1": {"provider": "anthropic", "model": "claude-sonnet-4-6", "max_tokens": 4096},
+      "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 4096},
+      "tier_3": null
+    },
+    "SUBMITTAL_REVIEW": {
+      "tier_1": {"provider": "anthropic", "model": "claude-sonnet-4-6", "max_tokens": 8192},
+      "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 8192},
+      "tier_3": {"provider": "xai", "model": "xai/grok-3", "max_tokens": 8192}
+    }
+  }
+}

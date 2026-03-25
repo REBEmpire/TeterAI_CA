@@ -1,0 +1,60 @@
+{
+  "name": "teterai-desktop",
+  "version": "0.1.0",
+  "description": "TeterAI CA — Desktop App",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "dev": "concurrently \"npm run dev:api\" \"npm run dev:electron\"",
+    "dev:api": "cd ../../.. && DESKTOP_MODE=true PYTHONPATH=src uv run uvicorn ui.api.server:app --port 8000 --reload",
+    "dev:electron": "electron .",
+    "build:web": "cd ../web && npm run build:desktop",
+    "pack": "electron-builder --dir"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0",
+    "concurrently": "^9.0.0"
+  },
+  "build": {
+    "appId": "com.teter.teterai-ca",
+    "productName": "TeterAI CA",
+    "copyright": "Copyright © 2026 Teter Architects & Engineers",
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist",
+        "to": "web-dist",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity",
+      "icon": "build-resources/icon.icns"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "build-resources/icon.ico"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "icon": "build-resources/icon.png",
+      "category": "Office"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

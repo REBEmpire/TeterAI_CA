@@ -1,19 +1,15 @@
 /**
- * Real-time Firestore listener for the reviewable task queue.
+ * Task queue hook — REST polling for desktop mode.
  *
- * Subscribes to all tasks with status IN [STAGED_FOR_REVIEW, ESCALATED_TO_HUMAN].
- * Updates the local state within < 2 s of Firestore writes.
+ * Replaces the Firestore onSnapshot real-time listener with a 5-second
+ * polling interval against the local FastAPI backend. This works in both
+ * desktop and cloud modes since the REST API is always available.
  */
-import { useEffect, useState } from 'react'
-import {
-  collection,
-  onSnapshot,
-  query,
-  where,
-  type Unsubscribe,
-} from 'firebase/firestore'
-import { db } from '../firebase'
+import { useEffect, useState, useCallback } from 'react'
+import { listTasks } from '../api/client'
 import type { TaskSummary, Urgency } from '../types'
+
+const POLL_INTERVAL_MS = 5000
 
 const URGENCY_ORDER: Record<Urgency, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 }
 
@@ -37,47 +33,28 @@ export function useTaskQueue(filters?: {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
 
-  useEffect(() => {
-    if (!db) {
+  const fetchTasks = useCallback(async () => {
+    try {
+      const data = await listTasks({
+        project: filters?.project,
+        doc_type: filters?.docType,
+        urgency: filters?.urgency,
+      })
+      setTasks(sortTasks(data))
+      setError(null)
+    } catch (err) {
+      setError(err as Error)
+    } finally {
       setLoading(false)
-      return
     }
-
-    setLoading(true)
-    let q = query(
-      collection(db, 'tasks'),
-      where('status', 'in', ['STAGED_FOR_REVIEW', 'ESCALATED_TO_HUMAN']),
-    )
-
-    if (filters?.project) {
-      q = query(q, where('project_number', '==', filters.project))
-    }
-    if (filters?.docType) {
-      q = query(q, where('document_type', '==', filters.docType))
-    }
-    if (filters?.urgency) {
-      q = query(q, where('urgency', '==', filters.urgency))
-    }
-
-    const unsub: Unsubscribe = onSnapshot(
-      q,
-      (snapshot) => {
-        const items: TaskSummary[] = snapshot.docs.map((doc) => ({
-          task_id: doc.id,
-          ...(doc.data() as Omit<TaskSummary, 'task_id'>),
-        }))
-        setTasks(sortTasks(items))
-        setLoading(false)
-        setError(null)
-      },
-      (err) => {
-        setError(err)
-        setLoading(false)
-      },
-    )
-
-    return unsub
   }, [filters?.project, filters?.docType, filters?.urgency])
+
+  useEffect(() => {
+    setLoading(true)
+    fetchTasks()
+    const interval = setInterval(fetchTasks, POLL_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [fetchTasks])
 
   return { tasks, loading, error }
 }

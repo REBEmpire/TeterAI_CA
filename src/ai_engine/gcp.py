@@ -1,18 +1,22 @@
 import os
 from typing import Dict, Any, Optional
-from google.cloud import firestore
-from google.cloud import secretmanager
-from google.auth.exceptions import DefaultCredentialsError
 from .models import ModelRegistry
+
 
 class GCPIntegration:
     def __init__(self, project_id: str = "teterai-ca-prototype", database: str = "teterai-ca"):
         self.project_id = project_id
         self.database = database
         try:
-            self.firestore_client = firestore.Client(project=project_id, database=database)
-            self.secret_client = secretmanager.SecretManagerServiceClient()
-        except DefaultCredentialsError:
+            from google.cloud import firestore, secretmanager
+            from google.auth.exceptions import DefaultCredentialsError
+            try:
+                self.firestore_client = firestore.Client(project=project_id, database=database)
+                self.secret_client = secretmanager.SecretManagerServiceClient()
+            except DefaultCredentialsError:
+                self.firestore_client = None
+                self.secret_client = None
+        except ImportError:
             self.firestore_client = None
             self.secret_client = None
 
@@ -55,4 +59,16 @@ class GCPIntegration:
             print(f"Error fetching model registry: {e}")
             return None
 
-gcp_integration = GCPIntegration()
+
+def _make_integration():
+    """Return LocalIntegration in DESKTOP_MODE, else GCPIntegration."""
+    if os.environ.get("DESKTOP_MODE", "").lower() in ("true", "1"):
+        from config.local_config import LocalConfig
+        from config.local_integration import LocalIntegration
+        cfg = LocalConfig.ensure_exists()
+        cfg.push_to_env()
+        return LocalIntegration(cfg)
+    return GCPIntegration()
+
+
+gcp_integration = _make_integration()
