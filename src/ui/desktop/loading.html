@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TeterAI CA</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: #313131;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      user-select: none;
+      -webkit-app-region: drag; /* allow window drag on the loading screen */
+    }
+
+    /* Brand mark */
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 40px;
+    }
+
+    .accent-bar {
+      width: 6px;
+      height: 52px;
+      background: #F37021;
+      border-radius: 3px;
+    }
+
+    .brand-text {
+      text-align: left;
+    }
+
+    .brand-name {
+      font-size: 28px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      line-height: 1;
+    }
+
+    .brand-name span {
+      color: #F37021;
+    }
+
+    .brand-sub {
+      font-size: 10px;
+      font-weight: 400;
+      color: rgba(255,255,255,0.4);
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+      margin-top: 4px;
+    }
+
+    /* Spinner */
+    .spinner-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid rgba(255,255,255,0.15);
+      border-top-color: #F37021;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .status {
+      font-size: 13px;
+      color: rgba(255,255,255,0.45);
+      letter-spacing: 0.03em;
+    }
+
+    /* Footer */
+    .footer {
+      position: fixed;
+      bottom: 20px;
+      font-size: 11px;
+      color: rgba(255,255,255,0.18);
+    }
+  </style>
+</head>
+<body>
+  <div class="brand">
+    <div class="accent-bar"></div>
+    <div class="brand-text">
+      <div class="brand-name">Teter<span>AI</span></div>
+      <div class="brand-sub">Construction Administration</div>
+    </div>
+  </div>
+
+  <div class="spinner-wrap">
+    <div class="spinner"></div>
+    <div class="status" id="status">Starting…</div>
+  </div>
+
+  <div class="footer">© 2026 Teter Architects &amp; Engineers</div>
+
+  <script>
+    // Cycle through loading messages so the screen feels alive
+    const messages = ['Starting…', 'Loading services…', 'Almost ready…']
+    let i = 0
+    setInterval(() => {
+      i = (i + 1) % messages.length
+      document.getElementById('status').textContent = messages[i]
+    }, 2200)
+  </script>
+</body>
+</html>
