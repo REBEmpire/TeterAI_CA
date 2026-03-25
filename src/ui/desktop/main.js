@@ -129,6 +129,7 @@ function createWindow() {
     minHeight: 600,
     title: 'TeterAI CA',
     backgroundColor: '#313131',
+    show: false,  // revealed on 'ready-to-show' to avoid white flash
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -137,7 +138,10 @@ function createWindow() {
     },
   })
 
-  mainWindow.loadURL(API_URL)
+  // Show branded splash immediately while FastAPI starts
+  mainWindow.loadFile(path.join(__dirname, 'loading.html'))
+
+  mainWindow.once('ready-to-show', () => mainWindow.show())
 
   // Open external links in the default browser, not in Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -173,14 +177,18 @@ ipcMain.handle('get-app-version', () => app.getVersion())
 app.whenReady().then(async () => {
   spawnFastAPI()
 
+  // Show splash immediately — don't wait for the API
+  createWindow()
+
   try {
     await waitForAPI()
-    createWindow()
+    // Transition from splash to the app
+    if (mainWindow) mainWindow.loadURL(API_URL)
   } catch (err) {
     console.error('[main] Failed to start backend:', err)
     dialog.showErrorBox(
       'TeterAI CA — Startup Error',
-      `The backend server failed to start.\n\n${err.message}\n\nPlease check that Python is installed and try again.`
+      `The backend server failed to start.\n\n${err.message}\n\nPlease reinstall the application.`
     )
     app.quit()
   }
