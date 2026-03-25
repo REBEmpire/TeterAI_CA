@@ -7,8 +7,15 @@ Provides:
 
 Run with:
   uvicorn ui.api.server:app --reload
+
+Desktop mode (local storage, no cloud):
+  DESKTOP_MODE=true PYTHONPATH=src uvicorn ui.api.server:app --reload
 """
+import logging
 import os
+import threading
+import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -18,6 +25,44 @@ from fastapi.staticfiles import StaticFiles
 from .routes import router
 from workflow.router import router as workflow_router
 
+logger = logging.getLogger(__name__)
+
+_DESKTOP_MODE = os.environ.get("DESKTOP_MODE", "").lower() in ("true", "1")
+
+
+def _run_inbox_watcher() -> None:
+    """Background thread: poll the local inbox folder at a configurable interval."""
+    try:
+        from config.local_config import LocalConfig
+        from integrations.local_inbox.watcher import LocalInboxWatcher
+        from ai_engine.gcp import gcp_integration
+
+        cfg = LocalConfig.ensure_exists()
+        db = gcp_integration.firestore_client
+        watcher = LocalInboxWatcher(cfg, db)
+        interval = cfg.poll_interval_seconds
+
+        logger.info(f"Inbox watcher started — polling {cfg.inbox_path} every {interval}s")
+        while True:
+            try:
+                new_ids = watcher.poll()
+                if new_ids:
+                    logger.info(f"Inbox watcher: created {len(new_ids)} ingest(s): {new_ids}")
+            except Exception as e:
+                logger.error(f"Inbox watcher error: {e}")
+            time.sleep(interval)
+    except Exception as e:
+        logger.error(f"Inbox watcher failed to start: {e}")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    if _DESKTOP_MODE:
+        t = threading.Thread(target=_run_inbox_watcher, daemon=True, name="inbox-watcher")
+        t.start()
+    yield
+
+
 app = FastAPI(
     title="TeterAI CA — Web API",
     version="0.1.0",
@@ -25,6 +70,7 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
+    lifespan=_lifespan,
 )
 
 # CORS — allow the React dev server in development

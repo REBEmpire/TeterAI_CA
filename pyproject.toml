@@ -5,23 +5,43 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    # Core web framework
     "fastapi>=0.135.1",
+    "uvicorn>=0.42.0",
+    "python-multipart>=0.0.20",
+    "httpx>=0.28.0",
+    # AI
+    "litellm>=1.82.4",
+    # Data / models
+    "pydantic>=2.12.5",
+    "PyJWT>=2.10.0",
+    # Document parsing
+    "python-docx>=1.1.2",
+    "pypdf>=5.0.0",
+    # Local database (desktop mode)
+    "aiosqlite>=0.20.0",
+    # Testing
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.3.0",
+    "pytest-mock>=3.15.1",
+]
+
+[project.optional-dependencies]
+# Cloud / GCP dependencies — only needed for the original cloud-hosted mode
+cloud = [
     "google-api-python-client>=2.193.0",
     "google-auth-httplib2>=0.3.0",
     "google-auth-oauthlib>=1.3.0",
     "google-cloud-firestore>=2.25.0",
     "google-cloud-secret-manager>=2.26.0",
-    "httpx>=0.28.0",
-    "litellm>=1.82.4",
+]
+# Knowledge Graph — optional; desktop app works without it
+kg = [
     "neo4j>=6.1.0",
-    "pydantic>=2.12.5",
-    "PyJWT>=2.10.0",
-    "pytest>=9.0.2",
-    "pytest-asyncio>=1.3.0",
-    "pytest-mock>=3.15.1",
-    "python-multipart>=0.0.20",
-    "python-docx>=1.1.2",
-    "pypdf>=5.0.0",
     "neo4j-graphrag[anthropic]>=1.0.0",
-    "uvicorn>=0.42.0",
+]
+# Convenience group: all extras
+all = [
+    "app[cloud]",
+    "app[kg]",
 ]

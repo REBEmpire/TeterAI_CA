@@ -6,8 +6,11 @@ import { useAuth } from './hooks/useAuth'
 import { AdminPanel } from './views/AdminPanel'
 import { Dashboard } from './views/Dashboard'
 import { LoginPage } from './views/LoginPage'
+import { SettingsPage } from './views/SettingsPage'
 import { SplitViewer } from './views/SplitViewer'
 import { SubmittalReviewViewer } from './views/SubmittalReviewViewer'
+
+const DESKTOP_MODE = import.meta.env.VITE_DESKTOP_MODE === 'true'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
@@ -38,6 +41,9 @@ function AppRoutes() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/tasks/:taskId" element={<SplitViewer />} />
         <Route path="/tasks/:taskId/submittal" element={<SubmittalReviewViewer />} />
+        {DESKTOP_MODE && (
+          <Route path="/settings" element={<SettingsPage />} />
+        )}
         <Route
           path="/admin"
           element={

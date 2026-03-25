@@ -2,6 +2,8 @@ import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 import { RoleGuard } from '../common/RoleGuard'
 
+const DESKTOP_MODE = import.meta.env.VITE_DESKTOP_MODE === 'true'
+
 /**
  * Top navigation bar — styled to match Teter's #313131 dark header with
  * orange brand accents, mirroring teterae.com's design language.
@@ -44,9 +46,12 @@ export function NavBar() {
         {/* Nav links */}
         <nav className="flex items-center gap-1">
           {navLink('/dashboard', 'Action Dashboard')}
-<RoleGuard roles={['ADMIN']}>
-            {navLink('/admin', 'Admin')}
-          </RoleGuard>
+          {DESKTOP_MODE && navLink('/settings', 'Settings')}
+          {!DESKTOP_MODE && (
+            <RoleGuard roles={['ADMIN']}>
+              {navLink('/admin', 'Admin')}
+            </RoleGuard>
+          )}
         </nav>
 
         {/* Right side: user info + logout */}
