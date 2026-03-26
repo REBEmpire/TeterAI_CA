@@ -17,6 +17,16 @@ export const teter = {
     grayMid: '#d4d4d4',
     grayText: '#6b6b6b',
 
+    // Surface depth system
+    surface0: '#f4f4f5',   // page background
+    surface1: '#ffffff',   // card face
+
+    // Typography
+    ink: '#1a1a1a',        // near-black for Inter body text
+
+    // Glow accent
+    orangeGlow: 'rgba(208,111,26,0.18)',
+
     // Confidence score indicator
     confidenceHigh: '#2e7d32',   // green  — ≥ 0.80
     confidenceMid: '#f9a825',    // amber  — 0.50–0.79
@@ -51,6 +61,10 @@ export const teter = {
     --confidence-high: #2e7d32;
     --confidence-mid: #f9a825;
     --confidence-low: #c62828;
+    --surface-0: #f4f4f5;
+    --surface-1: #ffffff;
+    --teter-ink: #1a1a1a;
+    --teter-orange-glow: rgba(208,111,26,0.18);
   `,
 } as const
 
