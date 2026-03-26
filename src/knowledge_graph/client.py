@@ -460,4 +460,424 @@ class KnowledgeGraphClient:
         return {"nodes": nodes, "edges": edges}
 
 
+    # ------------------------------------------------------------------
+    # Universal schema setup (all doc types)
+    # ------------------------------------------------------------------
+
+    def setup_universal_schema(self) -> None:
+        """
+        Create constraints and indexes for all document-type nodes.
+        Idempotent — safe to call on every startup or via admin endpoint.
+        """
+        if not self._driver:
+            return
+
+        statements = [
+            # Party (shared across all types)
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (p:Party) REQUIRE (p.name, p.party_type) IS NODE KEY",
+            # Submittal
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (s:Submittal) REQUIRE s.task_id IS UNIQUE",
+            # ScheduleReview
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (sr:ScheduleReview) REQUIRE sr.task_id IS UNIQUE",
+            # PayApp
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (pa:PayApp) REQUIRE pa.task_id IS UNIQUE",
+            # CostAnalysis
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (ca:CostAnalysis) REQUIRE ca.task_id IS UNIQUE",
+        ]
+
+        with self._driver.session() as session:
+            for stmt in statements:
+                try:
+                    session.run(stmt)
+                except Exception as e:
+                    logger.warning(f"setup_universal_schema: statement skipped — {e}")
+            try:
+                session.run("CALL db.awaitIndexes(60)")
+            except Exception:
+                pass
+
+        logger.info("setup_universal_schema: complete.")
+
+    # ------------------------------------------------------------------
+    # Full project graph (all doc types)
+    # ------------------------------------------------------------------
+
+    def get_full_project_graph(
+        self,
+        project_id: str,
+        doc_type_filter: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return a nodes+edges payload for the KnowledgeGraphView 'Full Project' mode.
+
+        Includes all node types: RFI, Submittal, ScheduleReview, PayApp,
+        CostAnalysis, Party, SpecSection, DESIGN_FLAW, CORRECTIVE_ACTION.
+
+        doc_type_filter: optional string — one of:
+            "rfi", "submittal", "schedule_review", "pay_app", "cost_analysis"
+            If None, all types are returned.
+        """
+        if not self._driver:
+            return {"nodes": [], "edges": []}
+
+        params: Dict[str, Any] = {"project_id": project_id}
+        nodes: list = []
+        edges: list = []
+
+        # Determine which labels to query
+        all_labels = {
+            "rfi":             ("RFI",            "rfi_id"),
+            "submittal":       ("Submittal",       "task_id"),
+            "schedule_review": ("ScheduleReview",  "task_id"),
+            "pay_app":         ("PayApp",          "task_id"),
+            "cost_analysis":   ("CostAnalysis",    "task_id"),
+        }
+
+        active = (
+            {doc_type_filter: all_labels[doc_type_filter]}
+            if doc_type_filter and doc_type_filter in all_labels
+            else all_labels
+        )
+
+        try:
+            with self._driver.session() as session:
+
+                # --- Document nodes (type-filtered) ---
+                for dtype, (label, id_prop) in active.items():
+                    result = session.run(
+                        f"""
+                        MATCH (d:{label} {{project_id: $project_id}})
+                        RETURN d.{id_prop} AS node_id,
+                               coalesce(d.doc_number, d.rfi_number, d.submittal_number,
+                                        d.app_number, d.change_order_num, d.{id_prop}) AS label,
+                               d.status_outcome AS status_outcome,
+                               d.key_finding AS key_finding,
+                               d.task_id AS task_id,
+                               d.project_id AS project_id
+                        """,
+                        project_id=project_id,
+                    )
+                    for row in result:
+                        nid = row.get("node_id") or row.get("task_id")
+                        if not nid:
+                            continue
+                        nodes.append({
+                            "id": f"{dtype[:3]}_{nid}",
+                            "type": label.upper() if label == "RFI" else label,
+                            "label": row.get("label") or nid,
+                            "properties": {
+                                "task_id":       row.get("task_id", ""),
+                                "status_outcome": row.get("status_outcome", ""),
+                                "key_finding":   (row.get("key_finding") or "")[:120],
+                                "project_id":    row.get("project_id", ""),
+                            },
+                        })
+
+                # --- Party nodes (always shown unless filtered to a non-Party type) ---
+                party_result = session.run(
+                    """
+                    MATCH (d {project_id: $project_id})-[:SUBMITTED_BY]->(p:Party)
+                    RETURN DISTINCT p.name AS name, p.party_type AS party_type
+                    """,
+                    project_id=project_id,
+                )
+                party_names_seen: set = set()
+                for row in party_result:
+                    name = row.get("name", "")
+                    if name and name not in party_names_seen:
+                        party_names_seen.add(name)
+                        nodes.append({
+                            "id": f"party_{name.replace(' ', '_')}",
+                            "type": "PARTY",
+                            "label": name,
+                            "properties": {
+                                "name":       name,
+                                "party_type": row.get("party_type", ""),
+                            },
+                        })
+
+                # --- SpecSection nodes ---
+                spec_result = session.run(
+                    """
+                    MATCH (s:SpecSection {project_id: $project_id})
+                    RETURN s.section_number AS section_number,
+                           coalesce(s.title, s.section_number) AS title
+                    """,
+                    project_id=project_id,
+                )
+                for row in spec_result:
+                    sn = row.get("section_number")
+                    if sn:
+                        nodes.append({
+                            "id": f"ss_{sn}",
+                            "type": "SPEC_SECTION",
+                            "label": sn,
+                            "properties": {
+                                "section_number": sn,
+                                "title": row.get("title", sn),
+                            },
+                        })
+
+                # --- DESIGN_FLAW + CORRECTIVE_ACTION nodes (RFI-specific) ---
+                if doc_type_filter in (None, "rfi"):
+                    flaw_result = session.run(
+                        "MATCH (f:DESIGN_FLAW {project_id: $project_id}) "
+                        "RETURN f.flaw_id AS flaw_id, f.category AS category, "
+                        "f.description AS description",
+                        project_id=project_id,
+                    )
+                    for row in flaw_result:
+                        fid = row.get("flaw_id")
+                        if fid:
+                            nodes.append({
+                                "id": f"df_{fid}",
+                                "type": "DESIGN_FLAW",
+                                "label": row.get("category", "Flaw"),
+                                "properties": {
+                                    "flaw_id":     fid,
+                                    "category":    row.get("category", ""),
+                                    "description": (row.get("description") or "")[:120],
+                                },
+                            })
+
+                    action_result = session.run(
+                        "MATCH (a:CORRECTIVE_ACTION {project_id: $project_id}) "
+                        "RETURN a.action_id AS action_id, a.action AS action",
+                        project_id=project_id,
+                    )
+                    for row in action_result:
+                        aid = row.get("action_id")
+                        if aid:
+                            nodes.append({
+                                "id": f"ca_{aid}",
+                                "type": "CORRECTIVE_ACTION",
+                                "label": (row.get("action") or "Action")[:40],
+                                "properties": {
+                                    "action_id": aid,
+                                    "action":    row.get("action", ""),
+                                },
+                            })
+
+                # --- Edges ---
+                # Build a set of node IDs for fast membership check
+                node_ids = {n["id"] for n in nodes}
+
+                edge_queries = [
+                    # SUBMITTED_BY
+                    """
+                    MATCH (d {project_id: $project_id})-[:SUBMITTED_BY]->(p:Party)
+                    RETURN id(d) AS src_int_id, d.task_id AS src_task_id,
+                           d.rfi_id AS src_rfi_id,
+                           labels(d) AS src_labels,
+                           p.name AS party_name, 'SUBMITTED_BY' AS rel_type
+                    """,
+                    # REFERENCES_SPEC
+                    """
+                    MATCH (d {project_id: $project_id})-[:REFERENCES_SPEC]->(s:SpecSection)
+                    RETURN id(d) AS src_int_id, d.task_id AS src_task_id,
+                           d.rfi_id AS src_rfi_id,
+                           labels(d) AS src_labels,
+                           s.section_number AS spec_number, 'REFERENCES_SPEC' AS rel_type
+                    """,
+                    # REVEALS (RFI → DESIGN_FLAW)
+                    """
+                    MATCH (r:RFI {project_id: $project_id})-[:REVEALS]->(f:DESIGN_FLAW)
+                    RETURN r.rfi_id AS rfi_id, f.flaw_id AS flaw_id, 'REVEALS' AS rel_type
+                    """,
+                    # SUGGESTS (DESIGN_FLAW → CORRECTIVE_ACTION)
+                    """
+                    MATCH (f:DESIGN_FLAW {project_id: $project_id})-[:SUGGESTS]->(a:CORRECTIVE_ACTION)
+                    RETURN f.flaw_id AS flaw_id, a.action_id AS action_id, 'SUGGESTS' AS rel_type
+                    """,
+                ]
+
+                def _label_to_dtype(labels_list: list) -> str:
+                    for lbl in (labels_list or []):
+                        ll = lbl.lower()
+                        if ll == "rfi":
+                            return "rfi"
+                        if ll == "submittal":
+                            return "sub"
+                        if ll == "schedulereview":
+                            return "sch"
+                        if ll == "payapp":
+                            return "pay"
+                        if ll == "costanalysis":
+                            return "cos"
+                    return "doc"
+
+                for eq in edge_queries:
+                    try:
+                        eresult = session.run(eq, project_id=project_id)
+                        for row in eresult:
+                            rel = row.get("rel_type", "RELATED")
+
+                            if rel == "REVEALS":
+                                src = f"rfi_{row.get('rfi_id')}"
+                                tgt = f"df_{row.get('flaw_id')}"
+                            elif rel == "SUGGESTS":
+                                src = f"df_{row.get('flaw_id')}"
+                                tgt = f"ca_{row.get('action_id')}"
+                            elif rel in ("SUBMITTED_BY", "REFERENCES_SPEC"):
+                                task_id_val = row.get("src_task_id") or row.get("src_rfi_id")
+                                prefix = _label_to_dtype(list(row.get("src_labels") or []))
+                                # For RFI the prefix is "rfi"
+                                if prefix == "rfi":
+                                    src = f"rfi_{task_id_val}"
+                                else:
+                                    src = f"{prefix}_{task_id_val}"
+                                if rel == "SUBMITTED_BY":
+                                    party_name = row.get("party_name", "")
+                                    tgt = f"party_{party_name.replace(' ', '_')}"
+                                else:
+                                    tgt = f"ss_{row.get('spec_number')}"
+                            else:
+                                continue
+
+                            if src in node_ids and tgt in node_ids:
+                                edges.append({"source": src, "target": tgt, "type": rel})
+                    except Exception as eq_err:
+                        logger.debug(f"get_full_project_graph edge query failed: {eq_err}")
+
+        except Exception as e:
+            logger.error(f"get_full_project_graph failed: {e}")
+            return {"nodes": [], "edges": []}
+
+        return {"nodes": nodes, "edges": edges}
+
+    # ------------------------------------------------------------------
+    # Semantic search across graph
+    # ------------------------------------------------------------------
+
+    def semantic_search_graph(
+        self,
+        query: str,
+        project_id: Optional[str] = None,
+        top_k: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """
+        Semantic search across RFI embeddings.  Returns a list of matching
+        nodes with score, type, label, and key properties.
+        """
+        if not self._driver:
+            return []
+
+        try:
+            query_vector = engine.generate_embedding(query)
+        except Exception as e:
+            logger.error(f"semantic_search_graph: embedding failed — {e}")
+            return []
+
+        threshold = float(os.environ.get("KG_EMBEDDING_SIMILARITY_THRESHOLD", 0.70))
+
+        cypher = """
+        CALL db.index.vector.queryNodes('rfi_embeddings', $top_k, $query_vector)
+        YIELD node, score
+        WHERE score > $threshold
+          AND ($project_id IS NULL OR node.project_id = $project_id)
+        RETURN
+            node.rfi_id        AS node_id,
+            'RFI'              AS node_type,
+            coalesce(node.rfi_number, node.rfi_id) AS label,
+            node.question      AS question,
+            node.status        AS status,
+            node.project_id    AS project_id,
+            score
+        ORDER BY score DESC
+        LIMIT $top_k
+        """
+
+        with self._driver.session() as session:
+            result = session.run(
+                cypher,
+                top_k=top_k,
+                query_vector=query_vector,
+                threshold=threshold,
+                project_id=project_id,
+            )
+            return [
+                {
+                    "node_id":   r.get("node_id"),
+                    "node_type": r.get("node_type"),
+                    "label":     r.get("label"),
+                    "score":     r.get("score"),
+                    "properties": {
+                        "question":   (r.get("question") or "")[:200],
+                        "status":     r.get("status", ""),
+                        "project_id": r.get("project_id", ""),
+                    },
+                }
+                for r in result
+            ]
+
+    # ------------------------------------------------------------------
+    # Project graph statistics
+    # ------------------------------------------------------------------
+
+    def get_project_graph_stats(self, project_id: str) -> Dict[str, Any]:
+        """
+        Return counts and summaries for a project's graph data.
+        """
+        if not self._driver:
+            return {}
+
+        stats: Dict[str, Any] = {
+            "rfi_count":            0,
+            "submittal_count":      0,
+            "schedule_review_count": 0,
+            "payapp_count":         0,
+            "cost_analysis_count":  0,
+            "unique_parties":       0,
+            "unique_spec_sections": 0,
+            "top_design_flaws":     [],
+        }
+
+        count_queries = [
+            ("rfi_count",             "MATCH (r:RFI {project_id: $p}) RETURN count(r) AS c"),
+            ("submittal_count",       "MATCH (s:Submittal {project_id: $p}) RETURN count(s) AS c"),
+            ("schedule_review_count", "MATCH (sr:ScheduleReview {project_id: $p}) RETURN count(sr) AS c"),
+            ("payapp_count",          "MATCH (pa:PayApp {project_id: $p}) RETURN count(pa) AS c"),
+            ("cost_analysis_count",   "MATCH (ca:CostAnalysis {project_id: $p}) RETURN count(ca) AS c"),
+            ("unique_spec_sections",  "MATCH (s:SpecSection {project_id: $p}) RETURN count(s) AS c"),
+        ]
+
+        try:
+            with self._driver.session() as session:
+                for key, cypher in count_queries:
+                    rec = session.run(cypher, p=project_id).single()
+                    if rec:
+                        stats[key] = rec["c"]
+
+                # Unique parties (name distinct, across all doc types for this project)
+                party_rec = session.run(
+                    """
+                    MATCH (d {project_id: $p})-[:SUBMITTED_BY]->(party:Party)
+                    RETURN count(DISTINCT party.name) AS c
+                    """,
+                    p=project_id,
+                ).single()
+                if party_rec:
+                    stats["unique_parties"] = party_rec["c"]
+
+                # Top design flaws
+                flaws = session.run(
+                    """
+                    MATCH (r:RFI {project_id: $p})-[:REVEALS]->(f:DESIGN_FLAW)
+                    RETURN f.category AS category, count(r) AS count
+                    ORDER BY count DESC
+                    LIMIT 5
+                    """,
+                    p=project_id,
+                )
+                stats["top_design_flaws"] = [
+                    {"category": row["category"], "count": row["count"]}
+                    for row in flaws
+                ]
+
+        except Exception as e:
+            logger.error(f"get_project_graph_stats failed: {e}")
+
+        return stats
+
+
 kg_client = KnowledgeGraphClient()

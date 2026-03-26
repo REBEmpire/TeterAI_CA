@@ -54,6 +54,8 @@ client_secret_894836945557-akcgg5soemve2cb2qrch3nqdrg29v5dr.apps.googleuserconte
 !src/ui/desktop/package.json
 # Allow bundled AI engine config
 !src/ai_engine/default_registry.json
+# Allow MCP server config
+!.mcp.json
 
 # Allow Flutter lib directory (overrides Python lib/ exclusion for mobile app)
 !src/ui/mobile/lib/

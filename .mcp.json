@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "teterai-neo4j": {
+      "command": "python",
+      "args": ["-m", "mcp_server.neo4j_mcp"],
+      "cwd": "/home/user/TeterAI_CA",
+      "env": {
+        "NEO4J_URI": "${NEO4J_URI}",
+        "NEO4J_USERNAME": "${NEO4J_USERNAME}",
+        "NEO4J_PASSWORD": "${NEO4J_PASSWORD}",
+        "PYTHONPATH": "src"
+      }
+    }
+  }
+}
