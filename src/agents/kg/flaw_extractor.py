@@ -109,6 +109,7 @@ def extract_and_store_flaw(
     spec_sections: list,
     project_id: str,
     ai_engine=None,
+    _run_universal: bool = True,
 ) -> None:
     """
     Extract a design flaw category from an approved RFI and upsert the
@@ -123,6 +124,23 @@ def extract_and_store_flaw(
     project_id    : Firestore project ID
     ai_engine     : An instantiated AIEngine; if None the module-level singleton is used
     """
+    # ------------------------------------------------------------------
+    # 0. Run universal entity extraction in parallel (Party, SpecSection, etc.)
+    # ------------------------------------------------------------------
+    if _run_universal:
+        try:
+            from agents.kg.universal_entity_extractor import extract_and_store_entities
+            extract_and_store_entities(
+                task_id=task_id,
+                document_text=f"{rfi_question}\n\n{rfi_response}",
+                document_type="rfi",
+                project_id=project_id,
+                metadata={"spec_sections": spec_sections},
+                ai_engine=ai_engine,
+            )
+        except Exception as _ue:
+            logger.debug(f"[{task_id}] universal extractor (from flaw_extractor) failed: {_ue}")
+
     # ------------------------------------------------------------------
     # 1. Resolve AI engine
     # ------------------------------------------------------------------

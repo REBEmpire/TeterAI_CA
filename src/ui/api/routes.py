@@ -357,25 +357,47 @@ def approve_task(
         delivery_triggered=delivery_triggered,
     ))
 
-    # If this is an RFI task, extract design flaw patterns for knowledge graph
-    if task_data.get("document_type", "").lower() == "rfi":
+    # Extract structured entities into Neo4j for ALL document types
+    _doc_type = task_data.get("document_type", "").lower()
+    _project_id = task_data.get("project_id", "")
+    _ai_engine = None
+    try:
+        from ai_engine.engine import engine as _ae
+        _ai_engine = _ae
+    except Exception:
+        pass
+
+    try:
+        from agents.kg.universal_entity_extractor import extract_and_store_entities
+        _document_text = (
+            (task_data.get("rfi_question", task_data.get("email_subject", "")) + "\n\n")
+            + (final_draft or "")
+        )
+        _metadata = {
+            "contractor_name": task_data.get("contractor_name", ""),
+            "vendor_name":     task_data.get("vendor_name", ""),
+            "doc_number":      task_data.get("document_number") or task_data.get("rfi_number", ""),
+        }
+        extract_and_store_entities(
+            task_id=task_id,
+            document_text=_document_text,
+            document_type=_doc_type or "rfi",
+            project_id=_project_id,
+            metadata=_metadata,
+            ai_engine=_ai_engine,
+        )
+    except Exception as e:
+        logger.warning(f"[{task_id}] KG universal extraction failed (non-fatal): {e}")
+
+    # Additionally, run design-flaw extraction for RFI tasks
+    if _doc_type == "rfi":
         try:
             from agents.kg.flaw_extractor import extract_and_store_flaw
-            rfi_question = task_data.get("rfi_question", task_data.get("email_subject", ""))
-            rfi_response = final_draft or ""
-            spec_sections = task_data.get("citations", [])
-            _project_id = task_data.get("project_id", "")
-            _ai_engine = None
-            try:
-                from ai_engine.engine import engine as _ae
-                _ai_engine = _ae
-            except Exception:
-                pass
             extract_and_store_flaw(
                 task_id=task_id,
-                rfi_question=rfi_question,
-                rfi_response=rfi_response,
-                spec_sections=spec_sections,
+                rfi_question=task_data.get("rfi_question", task_data.get("email_subject", "")),
+                rfi_response=final_draft or "",
+                spec_sections=task_data.get("citations", []),
                 project_id=_project_id,
                 ai_engine=_ai_engine,
             )
@@ -737,6 +759,32 @@ def approve_submittal_review(
     delivered_update["status_history"] = task_data.get("status_history", [])
     task_ref.update(delivered_update)
 
+    # Extract submittal entities into Neo4j
+    try:
+        from agents.kg.universal_entity_extractor import extract_and_store_entities
+        _sub_project_id = task_data.get("project_id", "")
+        _sub_text = report or ""
+        _sub_metadata = {
+            "vendor_name": task_data.get("vendor_name", task_data.get("contractor_name", "")),
+            "doc_number":  task_data.get("document_number", ""),
+        }
+        _sub_ai = None
+        try:
+            from ai_engine.engine import engine as _sae
+            _sub_ai = _sae
+        except Exception:
+            pass
+        extract_and_store_entities(
+            task_id=task_id,
+            document_text=_sub_text,
+            document_type="submittal",
+            project_id=_sub_project_id,
+            metadata=_sub_metadata,
+            ai_engine=_sub_ai,
+        )
+    except Exception as e:
+        logger.warning(f"[{task_id}] KG submittal extraction failed (non-fatal): {e}")
+
     return {"status": "DELIVERED", "task_id": task_id, "delivery_triggered": delivery_triggered}
 
 
@@ -850,6 +898,60 @@ def _build_submittal_report(
         lines.append("")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Graph — new unified endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/knowledge-graph/full-graph", tags=["knowledge-graph"])
+def kg_full_graph(
+    project_id: str = Query(..., description="Project ID"),
+    doc_type: Optional[str] = Query(None, description="Filter: rfi|submittal|schedule_review|pay_app|cost_analysis"),
+    current_user: Annotated[UserInfo, Depends(require_auth)] = None,
+):
+    """Return nodes+edges for the full project graph across all document types."""
+    from knowledge_graph.client import kg_client
+    return kg_client.get_full_project_graph(
+        project_id=project_id,
+        doc_type_filter=doc_type,
+    )
+
+
+@router.get("/knowledge-graph/search", tags=["knowledge-graph"])
+def kg_search(
+    q: str = Query(..., description="Semantic search query"),
+    project_id: Optional[str] = Query(None, description="Optional project filter"),
+    top_k: int = Query(10, ge=1, le=50),
+    current_user: Annotated[UserInfo, Depends(require_auth)] = None,
+):
+    """Semantic search across the knowledge graph using vector embeddings."""
+    from knowledge_graph.client import kg_client
+    return kg_client.semantic_search_graph(
+        query=q,
+        project_id=project_id,
+        top_k=top_k,
+    )
+
+
+@router.get("/knowledge-graph/stats", tags=["knowledge-graph"])
+def kg_stats(
+    project_id: str = Query(..., description="Project ID"),
+    current_user: Annotated[UserInfo, Depends(require_auth)] = None,
+):
+    """Return document counts and top patterns for a project's knowledge graph."""
+    from knowledge_graph.client import kg_client
+    return kg_client.get_project_graph_stats(project_id=project_id)
+
+
+@router.post("/admin/setup-kg-schema", tags=["admin"])
+def setup_kg_schema(
+    current_user: Annotated[UserInfo, Depends(require_role("ADMIN"))],
+):
+    """Create Neo4j constraints and indexes for all document-type nodes. Idempotent."""
+    from knowledge_graph.client import kg_client
+    kg_client.setup_universal_schema()
+    return {"status": "ok", "message": "Knowledge graph schema setup complete."}
 
 
 # ---------------------------------------------------------------------------
