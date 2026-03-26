@@ -9,6 +9,7 @@ import {
 } from '../api/client'
 import { UrgencyBadge } from '../components/common/UrgencyBadge'
 import { RejectionDialog } from '../components/modals/RejectionDialog'
+import { RedTeamAuditPanel } from '../components/review/RedTeamAuditPanel'
 import type {
   RejectionReason,
   ReviewItemSeverity,
@@ -456,6 +457,13 @@ export function SubmittalReviewViewer() {
           />
         </div>
       </div>
+
+      {/* Red Team Audit Trail */}
+      {taskId && (
+        <div className="flex-shrink-0 bg-white border-t border-teter-gray-mid px-4 py-3">
+          <RedTeamAuditPanel taskId={taskId} />
+        </div>
+      )}
 
       {/* Bottom action bar */}
       <div className="flex-shrink-0 bg-white border-t border-teter-gray-mid px-4 py-3 flex items-center gap-3">

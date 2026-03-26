@@ -55,6 +55,7 @@ class TaskDetail(TaskSummary):
     phase: Optional[str] = None
     rejection_reason: Optional[str] = None
     rejection_notes: Optional[str] = None
+    delivered_path: Optional[str] = None
 
 
 class ApproveRequest(BaseModel):

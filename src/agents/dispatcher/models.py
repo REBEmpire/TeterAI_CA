@@ -19,6 +19,9 @@ class DocumentType(str, Enum):
     MEETING_MINUTES = "MEETING_MINUTES"
     GENERAL = "GENERAL"
     UNKNOWN = "UNKNOWN"
+    COST_ANALYSIS = "COST_ANALYSIS"
+    PAY_APP_REVIEW = "PAY_APP_REVIEW"
+    SCHEDULE_REVIEW = "SCHEDULE_REVIEW"
 
 
 class Urgency(str, Enum):

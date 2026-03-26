@@ -170,6 +170,11 @@ ipcMain.handle('select-folder', async () => {
 
 ipcMain.handle('get-app-version', () => app.getVersion())
 
+ipcMain.handle('open-folder', async (_event, folderPath) => {
+  if (!folderPath) return
+  await shell.openPath(folderPath)
+})
+
 // ---------------------------------------------------------------------------
 // App lifecycle
 // ---------------------------------------------------------------------------

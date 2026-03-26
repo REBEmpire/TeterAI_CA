@@ -6,12 +6,15 @@ Mounts on the FastAPI app in server.py.
 import csv
 import io
 import logging
+import mimetypes
 import os
 import secrets
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -312,37 +315,32 @@ def approve_task(
     update["status_history"] = task_data.get("status_history", [])
     task_ref.update(update)
 
-    # --- Delivery: file the approved draft to storage and transition to DELIVERED ---
+    # --- Delivery: file the approved draft to the structured Delivered/ hierarchy ---
     delivery_triggered = False
-    final_file_path = None
+    delivered_path: str | None = None
     storage = _get_drive()
-    if storage and final_draft:
-        project_id = task_data.get("project_id") or task_data.get("project_number")
-        doc_number = task_data.get("document_number", "RFI-???")
-        doc_type = task_data.get("document_type", "RFI")
-        dest_folder_key = "02 - Construction/RFIs" if doc_type == "RFI" else "04 - Agent Workspace/Thought Chains"
+    if storage and final_draft and hasattr(storage, "deliver_approved_document"):
+        project_id = task_data.get("project_id") or task_data.get("project_number", "")
+        project_name = task_data.get("project_name") or project_id or "UnknownProject"
+        doc_type = task_data.get("document_type", "rfi").lower()
+        doc_number = task_data.get("document_number") or task_id
         try:
-            folder_id = storage.get_folder_id(project_id, dest_folder_key) if project_id else None
-            if folder_id:
-                filename = f"{doc_number}_approved_response.md"
-                file_ref = storage.upload_file(
-                    folder_id=folder_id,
-                    filename=filename,
-                    content=final_draft.encode("utf-8"),
-                    mime_type="text/markdown",
-                )
-                final_file_path = f"{dest_folder_key}/{filename}"
-                delivery_triggered = True
-                logger.info(f"[{task_id}] Approved draft filed: {file_ref}")
-            else:
-                logger.warning(f"[{task_id}] Folder '{dest_folder_key}' not found for project '{project_id}' — skipping file delivery.")
+            delivered_path = storage.deliver_approved_document(
+                task_id=task_id,
+                tool_type=doc_type,
+                project_name=project_name,
+                doc_title=doc_number,
+                content=final_draft.encode("utf-8"),
+                filename_suffix="Approved",
+            )
+            delivery_triggered = True
         except Exception as e:
-            logger.error(f"[{task_id}] File delivery failed: {e}")
+            logger.error(f"[{task_id}] Delivery failed (non-fatal): {e}")
 
     # Transition to DELIVERED
     delivered_update: dict[str, Any] = {"status": "DELIVERED", "delivered_at": datetime.now(timezone.utc).isoformat()}
-    if final_file_path:
-        delivered_update["final_drive_path"] = final_file_path
+    if delivered_path:
+        delivered_update["delivered_path"] = delivered_path
     _push_status_history(task_data, "DELIVERED", "Delivered after approval.", current_user.uid)
     delivered_update["status_history"] = task_data.get("status_history", [])
     task_ref.update(delivered_update)
@@ -359,7 +357,37 @@ def approve_task(
         delivery_triggered=delivery_triggered,
     ))
 
-    return {"status": "DELIVERED", "task_id": task_id, "delivery_triggered": delivery_triggered}
+    # If this is an RFI task, extract design flaw patterns for knowledge graph
+    if task_data.get("document_type", "").lower() == "rfi":
+        try:
+            from agents.kg.flaw_extractor import extract_and_store_flaw
+            rfi_question = task_data.get("rfi_question", task_data.get("email_subject", ""))
+            rfi_response = final_draft or ""
+            spec_sections = task_data.get("citations", [])
+            _project_id = task_data.get("project_id", "")
+            _ai_engine = None
+            try:
+                from ai_engine.engine import engine as _ae
+                _ai_engine = _ae
+            except Exception:
+                pass
+            extract_and_store_flaw(
+                task_id=task_id,
+                rfi_question=rfi_question,
+                rfi_response=rfi_response,
+                spec_sections=spec_sections,
+                project_id=_project_id,
+                ai_engine=_ai_engine,
+            )
+        except Exception as e:
+            logger.warning(f"[{task_id}] KG flaw extraction failed (non-fatal): {e}")
+
+    return {
+        "status": "DELIVERED",
+        "task_id": task_id,
+        "delivery_triggered": delivery_triggered,
+        "delivered_path": delivered_path,
+    }
 
 
 @router.post("/tasks/{task_id}/reject", tags=["tasks"])
@@ -567,6 +595,60 @@ def get_submittal_review(
         "task_id": task_id,
         "model_results": data.get("model_results", {}),
         "selected_items": data.get("selected_items", {}),
+    }
+
+
+@router.get("/tasks/{task_id}/red-team-audit", tags=["tasks"])
+def get_red_team_audit(
+    task_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Return the Red Team audit trail for a task:
+    initial_review, red_team_critique, and final_output.
+
+    For RFI tasks the data lives in thought_chains/{task_id}.
+    For SUBMITTAL tasks it lives in submittal_reviews/{task_id}.
+    Returns 404 if the audit fields are not present.
+    """
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    # Determine which collection to query based on document_type
+    task_doc = db.collection("tasks").document(task_id).get()
+    if not task_doc.exists:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found.")
+    task_data = task_doc.to_dict()
+    doc_type = (task_data.get("document_type") or "").upper()
+
+    if doc_type == "SUBMITTAL":
+        source_doc = db.collection("submittal_reviews").document(task_id).get()
+    else:
+        # Default: thought_chains (covers RFI and any other type)
+        source_doc = db.collection("thought_chains").document(task_id).get()
+
+    if not source_doc.exists:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Red Team audit data found for task {task_id}.",
+        )
+
+    data = source_doc.to_dict()
+    initial_review = data.get("initial_review")
+    red_team_critique = data.get("red_team_critique")
+    final_output = data.get("final_output")
+
+    if not initial_review or not red_team_critique or not final_output:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Red Team audit fields not present for task {task_id}.",
+        )
+
+    return {
+        "initial_review": initial_review,
+        "red_team_critique": red_team_critique,
+        "final_output": final_output,
     }
 
 
@@ -1015,6 +1097,129 @@ def export_task_audit_csv(
 
 
 # ---------------------------------------------------------------------------
+# Knowledge Graph — RFI Pattern Visualization (Phase D)
+# ---------------------------------------------------------------------------
+
+_KG_MOCK_DATA = {
+    "nodes": [
+        {
+            "id": "ss_08_41_13",
+            "type": "SPEC_SECTION",
+            "label": "08 41 13",
+            "properties": {"section_number": "08 41 13", "title": "Aluminum-Framed Entrances and Storefronts"},
+        },
+        {
+            "id": "ss_03_30_00",
+            "type": "SPEC_SECTION",
+            "label": "03 30 00",
+            "properties": {"section_number": "03 30 00", "title": "Cast-in-Place Concrete"},
+        },
+        {
+            "id": "rfi_demo_001",
+            "type": "RFI",
+            "label": "RFI-001",
+            "properties": {"rfi_id": "demo_001", "question": "Storefront anchor detail conflicts with structural slab edge.", "status": "DELIVERED"},
+        },
+        {
+            "id": "rfi_demo_002",
+            "type": "RFI",
+            "label": "RFI-002",
+            "properties": {"rfi_id": "demo_002", "question": "Concrete mix design compressive strength not specified for elevated deck.", "status": "DELIVERED"},
+        },
+        {
+            "id": "rfi_demo_003",
+            "type": "RFI",
+            "label": "RFI-003",
+            "properties": {"rfi_id": "demo_003", "question": "Glazing bite dimension missing from curtain wall shop drawings.", "status": "DELIVERED"},
+        },
+        {
+            "id": "df_coord_conflict",
+            "type": "DESIGN_FLAW",
+            "label": "Coordination Conflict",
+            "properties": {
+                "flaw_id": "demo_df_1",
+                "category": "Coordination Conflict",
+                "description": "Structural and architectural drawings conflict at storefront slab edge.",
+            },
+        },
+        {
+            "id": "df_spec_ambiguity",
+            "type": "DESIGN_FLAW",
+            "label": "Specification Ambiguity",
+            "properties": {
+                "flaw_id": "demo_df_2",
+                "category": "Specification Ambiguity",
+                "description": "Mix design strength requirements omitted for elevated concrete deck.",
+            },
+        },
+        {
+            "id": "ca_coord_review",
+            "type": "CORRECTIVE_ACTION",
+            "label": "Coordinate structural and architectural drawings at all curtain wall locations.",
+            "properties": {
+                "action_id": "demo_ca_1",
+                "action": "Coordinate structural and architectural drawings at all curtain wall locations.",
+            },
+        },
+        {
+            "id": "ca_spec_review",
+            "type": "CORRECTIVE_ACTION",
+            "label": "Issue specification addendum clarifying concrete strength for each pour location.",
+            "properties": {
+                "action_id": "demo_ca_2",
+                "action": "Issue specification addendum clarifying concrete strength for each pour location.",
+            },
+        },
+    ],
+    "edges": [
+        {"source": "rfi_demo_001", "target": "ss_08_41_13", "type": "REFERENCES_SPEC"},
+        {"source": "rfi_demo_002", "target": "ss_03_30_00", "type": "REFERENCES_SPEC"},
+        {"source": "rfi_demo_003", "target": "ss_08_41_13", "type": "REFERENCES_SPEC"},
+        {"source": "rfi_demo_001", "target": "df_coord_conflict", "type": "REVEALS"},
+        {"source": "rfi_demo_003", "target": "df_coord_conflict", "type": "REVEALS"},
+        {"source": "rfi_demo_002", "target": "df_spec_ambiguity", "type": "REVEALS"},
+        {"source": "df_coord_conflict", "target": "ca_coord_review", "type": "SUGGESTS"},
+        {"source": "df_spec_ambiguity", "target": "ca_spec_review", "type": "SUGGESTS"},
+    ],
+}
+
+
+@router.get("/knowledge-graph/rfi-patterns", tags=["knowledge-graph"])
+def get_rfi_pattern_graph(
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+    project_id: str = Query(..., description="Firestore project ID"),
+    spec_division: Optional[str] = Query(None, description='CSI division prefix, e.g. "08"'),
+    date_from: Optional[str] = Query(None, description="ISO date, e.g. 2024-01-01"),
+    date_to: Optional[str] = Query(None, description="ISO date, e.g. 2024-12-31"),
+):
+    """
+    Return graph nodes and edges for the RFI pattern knowledge graph.
+
+    Node types: SPEC_SECTION | RFI | DESIGN_FLAW | CORRECTIVE_ACTION
+    Edge types: REFERENCES_SPEC | REVEALS | SUGGESTS
+
+    Falls back to a built-in demo dataset when Neo4j is unavailable, so the
+    frontend always has data to render for management demonstrations.
+    """
+    try:
+        from knowledge_graph.client import kg_client
+        result = kg_client.get_rfi_pattern_graph(
+            project_id=project_id,
+            spec_division=spec_division,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        # If Neo4j returned nothing meaningful, serve the demo dataset
+        if not result.get("nodes"):
+            logger.info(f"get_rfi_pattern_graph: no nodes for project '{project_id}', serving mock data.")
+            return _KG_MOCK_DATA
+        return result
+    except Exception as e:
+        logger.warning(f"get_rfi_pattern_graph: KG unavailable ({e}), serving mock data.")
+        return _KG_MOCK_DATA
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
@@ -1252,3 +1457,185 @@ async def upload_ingest(
         })
 
     return {"ingest_id": ingest_id, "filename": file.filename, "status": "queued"}
+
+
+# ---------------------------------------------------------------------------
+# Document Upload — structured ingest with project/tool metadata (Phase C1)
+# ---------------------------------------------------------------------------
+
+_TOOL_TYPE_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("rfi",      ["rfi"]),
+    ("submittal", ["sub", "submittal"]),
+    ("cost",     ["pco", "change"]),
+    ("payapp",   ["pa", "pay", "application"]),
+    ("schedule", ["sch", "schedule"]),
+]
+
+
+def _detect_tool_type(filename: str) -> str:
+    """Auto-detect tool_type from filename keywords (case-insensitive)."""
+    lower = filename.lower()
+    for tool_type, keywords in _TOOL_TYPE_KEYWORDS:
+        for kw in keywords:
+            if kw in lower:
+                return tool_type
+    return "unknown"
+
+
+def _guess_content_type(filename: str) -> str:
+    mt, _ = mimetypes.guess_type(filename)
+    return mt or "application/octet-stream"
+
+
+@router.post("/upload/document", tags=["upload"])
+async def upload_document(
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+    primary_file: UploadFile = File(...),
+    supporting_files: list[UploadFile] = File(default=[]),
+    project_id: str = Form(...),
+    tool_type: Optional[str] = Form(default=None),
+):
+    """
+    Accept a primary document (PDF/DOCX/XER/XML) plus optional supporting files,
+    save them to ~/TeterAI/Inbox/uploads/{timestamp}_{filename},
+    create an email_ingest record in Firestore with source='manual_upload',
+    and return a task_id + resolved tool_type.
+
+    Works in both desktop and cloud modes.
+    tool_type values: rfi | submittal | cost | payapp | schedule | unknown | auto (auto-detect)
+    """
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    # Resolve project — accept either Firestore doc ID or project_number string
+    project_data: dict = {}
+    resolved_project_id = project_id
+    project_doc = db.collection("projects").document(project_id).get()
+    if project_doc.exists:
+        project_data = project_doc.to_dict() or {}
+        resolved_project_id = project_doc.id
+    else:
+        proj_query = list(
+            db.collection("projects").where("project_number", "==", project_id).limit(1).stream()
+        )
+        if proj_query:
+            project_doc = proj_query[0]
+            project_data = project_doc.to_dict() or {}
+            resolved_project_id = project_doc.id
+        else:
+            raise HTTPException(status_code=404, detail=f"Project '{project_id}' not found.")
+
+    project_number = project_data.get("project_number", resolved_project_id)
+
+    # Resolve tool_type: explicit wins; "auto" or absent triggers filename detection
+    resolved_tool_type = (
+        tool_type
+        if tool_type and tool_type not in ("auto", "")
+        else _detect_tool_type(primary_file.filename or "")
+    )
+
+    # Determine upload directory (desktop uses configured inbox; cloud uses ~/TeterAI/Inbox)
+    if _DESKTOP_MODE:
+        try:
+            from config.local_config import LocalConfig
+            cfg = LocalConfig.ensure_exists()
+            inbox_base = Path(cfg.inbox_path).expanduser()
+        except Exception:
+            inbox_base = Path("~/TeterAI/Inbox").expanduser()
+    else:
+        inbox_base = Path("~/TeterAI/Inbox").expanduser()
+
+    upload_dir = inbox_base / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    primary_filename = primary_file.filename or f"upload_{timestamp}.bin"
+
+    # Save primary file
+    primary_dest = upload_dir / f"{timestamp}_{primary_filename}"
+    primary_content = await primary_file.read()
+    primary_dest.write_bytes(primary_content)
+
+    # Save supporting files
+    supporting_metadata: list[dict] = []
+    for sf in supporting_files:
+        sf_name = sf.filename or ""
+        if sf_name:
+            sf_dest = upload_dir / f"{timestamp}_supporting_{sf_name}"
+            sf_content = await sf.read()
+            sf_dest.write_bytes(sf_content)
+            supporting_metadata.append({
+                "filename": sf_name,
+                "content_type": _guess_content_type(sf_name),
+                "local_path": str(sf_dest),
+            })
+
+    # Build ingest record (mirrors email_ingest schema from watcher._ingest_attachment)
+    ingest_id = str(uuid.uuid4())
+    task_id = f"TASK-{ingest_id[:8].upper()}-{uuid.uuid4().hex[:6].upper()}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    attachment_metadata = [
+        {
+            "filename": primary_filename,
+            "content_type": _guess_content_type(primary_filename),
+            "local_path": str(primary_dest),
+        },
+        *supporting_metadata,
+    ]
+
+    ingest_record = {
+        "ingest_id": ingest_id,
+        "message_id": ingest_id,
+        "received_at": now,
+        "sender_email": current_user.email,
+        "sender_name": current_user.display_name,
+        "subject": primary_filename,
+        "body_text": "",
+        "body_text_truncated": False,
+        "attachment_metadata": attachment_metadata,
+        "subject_hints": {
+            "document_type": resolved_tool_type.upper(),
+            "project_number": project_number,
+        },
+        "status": "PENDING_CLASSIFICATION",
+        "task_id": task_id,
+        "created_at": now,
+        # Distinguishes manual uploads from folder_watch and email ingests
+        "source": "manual_upload",
+        # Extra context fields for the dispatcher
+        "project_id": resolved_project_id,
+        "project_number": project_number,
+        "tool_type_hint": resolved_tool_type,
+        "uploaded_by": current_user.uid,
+    }
+
+    try:
+        db.collection("email_ingests").document(ingest_id).set(ingest_record)
+        logger.info(
+            f"[upload/document] ingest_id={ingest_id} task_id={task_id} "
+            f"file={primary_filename} tool_type={resolved_tool_type} "
+            f"project={resolved_project_id} user={current_user.uid}"
+        )
+    except Exception as exc:
+        logger.error(f"[upload/document] Failed to write ingest record: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to create ingest record.")
+
+    # Prevent the folder watcher from double-ingesting the same file
+    try:
+        db.collection("processed_emails").document(ingest_id).set({
+            "message_id": ingest_id,
+            "local_path": str(primary_dest),
+            "processed_at": now,
+            "task_id": task_id,
+        })
+    except Exception as exc:
+        logger.warning(f"[upload/document] Could not write processed_emails guard record: {exc}")
+
+    return {
+        "task_id": task_id,
+        "ingest_id": ingest_id,
+        "tool_type": resolved_tool_type,
+        "status": "queued",
+    }

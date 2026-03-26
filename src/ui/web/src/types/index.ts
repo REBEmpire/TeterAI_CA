@@ -66,6 +66,14 @@ export interface TaskDetail extends TaskSummary {
   phase?: Phase
   rejection_reason?: string
   rejection_notes?: string
+  delivered_path?: string
+}
+
+export interface ApproveResponse {
+  status: string
+  task_id: string
+  delivery_triggered: boolean
+  delivered_path?: string
 }
 
 export interface Attachment {
@@ -171,4 +179,28 @@ export interface SubmittalReviewData {
     tier_3?: SubmittalModelResult
   }
   selected_items: Record<string, boolean>
+}
+
+// ---------------------------------------------------------------------------
+// Red Team Audit types
+// ---------------------------------------------------------------------------
+
+export interface CritiqueItem {
+  field: string
+  original: string
+  critique: string
+  severity: 'AGREE' | 'MINOR_REVISION' | 'MAJOR_REVISION' | 'REJECT'
+  revised_value?: string | null
+}
+
+export interface RedTeamResult {
+  critique_items: CritiqueItem[]
+  summary: string
+  overall_severity: 'AGREE' | 'MINOR_REVISION' | 'MAJOR_REVISION' | 'REJECT'
+}
+
+export interface RedTeamAuditData {
+  initial_review: Record<string, unknown>
+  red_team_critique: RedTeamResult
+  final_output: Record<string, unknown>
 }

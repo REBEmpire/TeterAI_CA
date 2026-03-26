@@ -251,15 +251,24 @@ class RFIAgent:
         )
 
         # 1. Always write to Firestore (UI reads from here)
+        firestore_payload: dict = {
+            "draft_rfi_response": content,
+            "confidence_score": draft.confidence_score,
+            "review_flag": draft.review_flag,
+            "references": draft.references,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        # Include Red Team audit trail if present
+        if draft.initial_review is not None:
+            firestore_payload["initial_review"] = draft.initial_review
+        if draft.red_team_critique is not None:
+            firestore_payload["red_team_critique"] = draft.red_team_critique
+        if draft.final_output is not None:
+            firestore_payload["final_output"] = draft.final_output
+
         try:
             db.collection("thought_chains").document(task_id).set(
-                {
-                    "draft_rfi_response": content,
-                    "confidence_score": draft.confidence_score,
-                    "review_flag": draft.review_flag,
-                    "references": draft.references,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                },
+                firestore_payload,
                 merge=True,
             )
         except Exception as e:

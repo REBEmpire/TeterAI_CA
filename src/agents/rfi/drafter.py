@@ -5,6 +5,8 @@ from datetime import date
 from ai_engine.engine import AIEngine
 from ai_engine.models import AIRequest, CapabilityClass
 
+from agents.mixins.red_team import RedTeamMixin
+
 from .models import RFIExtraction, KGLookupResult, RFIResponse
 
 logger = logging.getLogger(__name__)
@@ -57,7 +59,7 @@ def _format_playbook_rules(rules: list) -> str:
     return "\n".join(lines)
 
 
-class RFIDrafter:
+class RFIDrafter(RedTeamMixin):
     def __init__(self, ai_engine: AIEngine):
         self._engine = ai_engine
 
@@ -121,13 +123,38 @@ class RFIDrafter:
             f"RE: RFI-{extraction.rfi_number_submitted}"
         )
 
+        # Pass 2 — Red Team critique
+        _RFI_DOMAIN_CONTEXT = (
+            "This is an RFI (Request for Information) response for a construction project.\n"
+            "Focus your critique on:\n"
+            "- Is the response directly addressing the RFI question?\n"
+            "- Are the correct specification sections cited?\n"
+            "- Is the response definitive or vague/wishy-washy?\n"
+            "- Is the response appropriately professional in tone?\n"
+            "- Are there any missing cross-references to related specs or drawings?\n"
+            "- Is the recommended action/direction clear?"
+        )
+        initial_output = {
+            "response_text": response_text,
+            "references": references,
+            "confidence_score": confidence_score,
+        }
+        critique = self.run_red_team(self._engine, initial_output, _RFI_DOMAIN_CONTEXT, task_id)
+        final_output = self.apply_critique(initial_output, critique)
+
+        # Use the (potentially revised) response_text from final_output
+        final_response_text = final_output.get("response_text", response_text)
+
         return RFIResponse(
             header=header,
-            response_text=response_text,
+            response_text=final_response_text,
             references=references,
             confidence_score=confidence_score,
             review_flag=review_flag,
             raw_response=raw,
+            initial_review=initial_output,
+            red_team_critique=critique.model_dump(),
+            final_output=final_output,
         )
 
     def _parse_draft(self, raw: str, task_id: str) -> tuple:

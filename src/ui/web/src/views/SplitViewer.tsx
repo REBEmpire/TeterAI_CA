@@ -5,6 +5,7 @@ import { ConfidenceMeter } from '../components/common/ConfidenceMeter'
 import { UrgencyBadge } from '../components/common/UrgencyBadge'
 import { RejectionDialog } from '../components/modals/RejectionDialog'
 import { ThoughtChainModal } from '../components/modals/ThoughtChainModal'
+import { RedTeamAuditPanel } from '../components/review/RedTeamAuditPanel'
 import type { RejectionReason, TaskDetail } from '../types'
 
 type RightTab = 'email' | `attachment_${number}` | `spec_${number}` | `drawing_${number}`
@@ -31,6 +32,7 @@ export function SplitViewer() {
   // Action states
   const [acting, setActing] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [deliveredPath, setDeliveredPath] = useState<string | null>(null)
 
   useEffect(() => {
     if (!taskId) return
@@ -52,8 +54,12 @@ export function SplitViewer() {
       const edited = isEditing && draftContent !== task?.draft_content
         ? draftContent
         : undefined
-      await approveTask(taskId, edited)
-      navigate('/dashboard')
+      const result = await approveTask(taskId, edited)
+      if (result?.delivered_path) {
+        setDeliveredPath(result.delivered_path)
+      } else {
+        navigate('/dashboard')
+      }
     } catch (e: unknown) {
       setActionError(e instanceof Error ? e.message : 'Approval failed.')
     } finally {
@@ -296,6 +302,13 @@ export function SplitViewer() {
               {isEditing ? 'Preview Draft' : 'Edit Draft'}
             </button>
           </div>
+
+          {/* Red Team Audit Trail */}
+          {taskId && (
+            <div className="px-4 py-3 border-t border-teter-gray-mid bg-white flex-shrink-0">
+              <RedTeamAuditPanel taskId={taskId} />
+            </div>
+          )}
         </div>
 
         {/* ── RIGHT: Source Documents ────────────────────────────── */}
@@ -384,6 +397,36 @@ export function SplitViewer() {
           </button>
         </div>
       </div>
+
+      {/* Delivery confirmation banner */}
+      {deliveredPath && (
+        <div className="flex-shrink-0 bg-green-50 border-t border-green-200 px-4 py-3 flex items-center gap-3 text-sm">
+          <span className="text-green-700 font-medium">Delivered to:</span>
+          <span className="text-green-800 font-mono text-xs truncate flex-1" title={deliveredPath}>
+            {deliveredPath}
+          </span>
+          {(window as typeof window & { electronAPI?: { openFolder?: (p: string) => void } }).electronAPI?.openFolder ? (
+            <button
+              className="btn-outline text-xs shrink-0"
+              onClick={() =>
+                (window as typeof window & { electronAPI?: { openFolder?: (p: string) => void } }).electronAPI!.openFolder!(deliveredPath)
+              }
+            >
+              Open Folder
+            </button>
+          ) : (
+            <button
+              className="btn-outline text-xs shrink-0"
+              onClick={() => navigator.clipboard.writeText(deliveredPath)}
+            >
+              Copy Path
+            </button>
+          )}
+          <button className="btn-primary text-xs shrink-0" onClick={() => navigate('/dashboard')}>
+            Back to Dashboard
+          </button>
+        </div>
+      )}
 
       {/* Modals */}
       {showReject && (

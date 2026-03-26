@@ -319,4 +319,145 @@ class KnowledgeGraphClient:
             }
 
 
+    # ------------------------------------------------------------------
+    # Phase D: Design Flaw Pattern Graph
+    # ------------------------------------------------------------------
+
+    def get_rfi_pattern_graph(
+        self,
+        project_id: str,
+        spec_division: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return a nodes+edges payload suitable for the KnowledgeGraphView frontend.
+
+        Fetches SpecSection, RFI, DESIGN_FLAW and CORRECTIVE_ACTION nodes for
+        *project_id*, along with REFERENCES_SPEC, REVEALS and SUGGESTS edges.
+
+        Optional filters:
+          spec_division  – e.g. "08" filters SpecSection nodes whose section_number
+                           starts with that prefix.
+          date_from/to   – ISO date strings; filter RFI nodes by created_at.
+        """
+        if not self._driver:
+            return {"nodes": [], "edges": []}
+
+        # Build optional WHERE clauses
+        division_filter = "AND s.section_number STARTS WITH $division " if spec_division else ""
+        date_from_filter = "AND r.created_at >= $date_from " if date_from else ""
+        date_to_filter = "AND r.created_at <= $date_to " if date_to else ""
+
+        params: Dict[str, Any] = {"project_id": project_id}
+        if spec_division:
+            params["division"] = spec_division
+        if date_from:
+            params["date_from"] = date_from
+        if date_to:
+            params["date_to"] = date_to
+
+        cypher = f"""
+        // --- SpecSection nodes ---
+        MATCH (s:SpecSection {{project_id: $project_id}})
+        WHERE true {division_filter}
+        WITH collect({{
+            id: 'ss_' + s.section_number,
+            type: 'SPEC_SECTION',
+            label: s.section_number,
+            properties: {{section_number: s.section_number, title: coalesce(s.title, s.section_number)}}
+        }}) AS spec_nodes
+
+        // --- RFI nodes ---
+        OPTIONAL MATCH (r:RFI {{project_id: $project_id}})
+        WHERE true {date_from_filter}{date_to_filter}
+        WITH spec_nodes, collect({{
+            id: 'rfi_' + r.rfi_id,
+            type: 'RFI',
+            label: coalesce(r.rfi_number, r.rfi_id),
+            properties: {{
+                rfi_id: r.rfi_id,
+                question: coalesce(r.question, ''),
+                status: coalesce(r.status, '')
+            }}
+        }}) AS rfi_nodes
+
+        // --- DESIGN_FLAW nodes ---
+        OPTIONAL MATCH (f:DESIGN_FLAW {{project_id: $project_id}})
+        WITH spec_nodes, rfi_nodes, collect({{
+            id: 'df_' + f.flaw_id,
+            type: 'DESIGN_FLAW',
+            label: f.category,
+            properties: {{
+                flaw_id: f.flaw_id,
+                category: f.category,
+                description: coalesce(f.description, '')
+            }}
+        }}) AS flaw_nodes
+
+        // --- CORRECTIVE_ACTION nodes ---
+        OPTIONAL MATCH (a:CORRECTIVE_ACTION {{project_id: $project_id}})
+        WITH spec_nodes, rfi_nodes, flaw_nodes, collect({{
+            id: 'ca_' + a.action_id,
+            type: 'CORRECTIVE_ACTION',
+            label: left(a.action, 60),
+            properties: {{action_id: a.action_id, action: a.action}}
+        }}) AS action_nodes
+
+        RETURN spec_nodes, rfi_nodes, flaw_nodes, action_nodes
+        """
+
+        edge_cypher = f"""
+        MATCH (r:RFI {{project_id: $project_id}})-[rel]->(target)
+        WHERE true {date_from_filter}{date_to_filter}
+        RETURN
+            CASE
+                WHEN r.rfi_id IS NOT NULL THEN 'rfi_' + r.rfi_id
+                ELSE 'rfi_' + id(r)
+            END AS source,
+            CASE
+                WHEN target:SpecSection THEN 'ss_' + target.section_number
+                WHEN target:DESIGN_FLAW THEN 'df_' + target.flaw_id
+                ELSE 'ca_' + target.action_id
+            END AS target_id,
+            type(rel) AS rel_type
+
+        UNION ALL
+
+        MATCH (f:DESIGN_FLAW {{project_id: $project_id}})-[rel2]->(a:CORRECTIVE_ACTION)
+        RETURN
+            'df_' + f.flaw_id AS source,
+            'ca_' + a.action_id AS target_id,
+            type(rel2) AS rel_type
+        """
+
+        nodes: list = []
+        edges: list = []
+
+        try:
+            with self._driver.session() as session:
+                result = session.run(cypher, **params)
+                record = result.single()
+                if record:
+                    for group in ("spec_nodes", "rfi_nodes", "flaw_nodes", "action_nodes"):
+                        raw = record.get(group) or []
+                        for item in raw:
+                            if item and item.get("id"):
+                                nodes.append(dict(item))
+
+                edge_result = session.run(edge_cypher, **params)
+                for row in edge_result:
+                    src = row.get("source")
+                    tgt = row.get("target_id")
+                    rel = row.get("rel_type", "RELATED")
+                    if src and tgt:
+                        edges.append({"source": src, "target": tgt, "type": rel})
+
+        except Exception as e:
+            logger.error(f"get_rfi_pattern_graph failed: {e}")
+            return {"nodes": [], "edges": []}
+
+        return {"nodes": nodes, "edges": edges}
+
+
 kg_client = KnowledgeGraphClient()

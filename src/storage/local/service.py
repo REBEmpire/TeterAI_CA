@@ -188,3 +188,56 @@ class LocalStorageService:
         if not self._db:
             raise RuntimeError("SQLiteClient not available for document counter")
         return self._db.increment_counter(project_id, doc_type)
+
+    # ------------------------------------------------------------------
+    # Delivery
+    # ------------------------------------------------------------------
+
+    TOOL_DELIVERY_FOLDERS: dict[str, str] = {
+        "rfi": "RFIs",
+        "submittal": "Submittals",
+        "cost": "PCOs",
+        "payapp": "PayApplications",
+        "schedule": "Schedules",
+    }
+
+    def deliver_approved_document(
+        self,
+        task_id: str,
+        tool_type: str,
+        project_name: str,
+        doc_title: str,
+        content: bytes,
+        filename_suffix: str = "Approved",
+    ) -> str:
+        """
+        Save an approved document to the structured delivery folder.
+
+        Path:
+            ~/TeterAI/Delivered/{project_name}/{tool_folder}/{task_id}_{doc_title}_{suffix}.docx
+
+        Returns the full absolute path of the saved file.
+        If tool_type is not recognised the subfolder defaults to "Other".
+        """
+        import re
+
+        def _sanitize(s: str) -> str:
+            s = s.replace(" ", "_")
+            s = re.sub(r"[^\w\-]", "", s)
+            return s or "unnamed"
+
+        tool_folder = self.TOOL_DELIVERY_FOLDERS.get(tool_type.lower(), "Other")
+        safe_project = _sanitize(project_name)
+        safe_title = _sanitize(doc_title)
+        safe_suffix = _sanitize(filename_suffix)
+
+        delivery_root = Path.home() / "TeterAI" / "Delivered"
+        dest_dir = delivery_root / safe_project / tool_folder
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"{task_id}_{safe_title}_{safe_suffix}.docx"
+        dest_path = dest_dir / filename
+        dest_path.write_bytes(content)
+
+        logger.info(f"[{task_id}] Delivered approved document: {dest_path}")
+        return str(dest_path)

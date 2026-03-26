@@ -3,9 +3,11 @@
  * Reads the JWT from localStorage and attaches it as a Bearer token.
  */
 import type {
+  ApproveResponse,
   AuditEntrySummary,
   ModelRegistryEntry,
   ProjectSummary,
+  RedTeamAuditData,
   SubmittalReviewData,
   TaskDetail,
   TaskSummary,
@@ -94,8 +96,8 @@ export async function getTask(taskId: string): Promise<TaskDetail> {
   return request<TaskDetail>('GET', `/tasks/${taskId}`)
 }
 
-export async function approveTask(taskId: string, editedDraft?: string): Promise<void> {
-  return request('POST', `/tasks/${taskId}/approve`, { edited_draft: editedDraft ?? null })
+export async function approveTask(taskId: string, editedDraft?: string): Promise<ApproveResponse> {
+  return request<ApproveResponse>('POST', `/tasks/${taskId}/approve`, { edited_draft: editedDraft ?? null })
 }
 
 export async function rejectTask(
@@ -170,6 +172,15 @@ export async function approveSubmittalReview(
   return request('POST', `/tasks/${taskId}/submittal-review/approve`, { selected_items: selectedItems })
 }
 
+export async function getRedTeamAudit(taskId: string): Promise<RedTeamAuditData | null> {
+  try {
+    return await request<RedTeamAuditData>('GET', `/tasks/${taskId}/red-team-audit`)
+  } catch (e: unknown) {
+    if (e instanceof ApiError && e.status === 404) return null
+    throw e
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Audit
 // ---------------------------------------------------------------------------
@@ -181,4 +192,62 @@ export async function getTaskAudit(taskId: string): Promise<AuditEntrySummary[]>
 export function auditExportUrl(taskId: string): string {
   const token = getToken()
   return `${BASE}/audit/${taskId}/export${token ? `?token=${token}` : ''}`
+}
+
+// ---------------------------------------------------------------------------
+// Document Upload (Phase C)
+// ---------------------------------------------------------------------------
+
+export interface UploadDocumentResponse {
+  task_id: string
+  ingest_id: string
+  tool_type: string
+  status: string
+}
+
+/**
+ * Upload a primary construction document plus optional supporting files.
+ *
+ * Uses multipart/form-data — does NOT go through the JSON `request()` helper
+ * because the backend expects File uploads via FastAPI UploadFile + Form params.
+ *
+ * @param primaryFile      The main document (PDF/DOCX/XER/XML)
+ * @param supportingFiles  Additional reference files (may be empty array)
+ * @param projectId        Firestore project doc ID or project_number string
+ * @param toolType         One of: rfi | submittal | cost | payapp | schedule
+ *                         Omit (or pass undefined) to let the backend auto-detect.
+ */
+export async function uploadDocument(
+  primaryFile: File,
+  supportingFiles: File[],
+  projectId: string,
+  toolType?: string,
+): Promise<UploadDocumentResponse> {
+  const token = getToken()
+
+  const formData = new FormData()
+  formData.append('primary_file', primaryFile)
+  for (const sf of supportingFiles) {
+    formData.append('supporting_files', sf)
+  }
+  formData.append('project_id', projectId)
+  if (toolType) {
+    formData.append('tool_type', toolType)
+  }
+
+  const res = await fetch(`${BASE}/upload/document`, {
+    method: 'POST',
+    // Do NOT set Content-Type — the browser sets it automatically with the multipart boundary
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new ApiError(res.status, detail?.detail ?? res.statusText)
+  }
+
+  return res.json() as Promise<UploadDocumentResponse>
 }

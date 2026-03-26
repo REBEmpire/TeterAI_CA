@@ -5,10 +5,12 @@ import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './hooks/useAuth'
 import { AdminPanel } from './views/AdminPanel'
 import { Dashboard } from './views/Dashboard'
+import { KnowledgeGraphView } from './views/KnowledgeGraphView'
 import { LoginPage } from './views/LoginPage'
 import { SettingsPage } from './views/SettingsPage'
 import { SplitViewer } from './views/SplitViewer'
 import { SubmittalReviewViewer } from './views/SubmittalReviewViewer'
+import { UploadView } from './views/UploadView'
 
 const DESKTOP_MODE = import.meta.env.VITE_DESKTOP_MODE === 'true'
 
@@ -41,6 +43,8 @@ function AppRoutes() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/tasks/:taskId" element={<SplitViewer />} />
         <Route path="/tasks/:taskId/submittal" element={<SubmittalReviewViewer />} />
+        <Route path="/upload" element={<UploadView />} />
+        <Route path="/knowledge-graph" element={<KnowledgeGraphView />} />
         {DESKTOP_MODE && (
           <Route path="/settings" element={<SettingsPage />} />
         )}

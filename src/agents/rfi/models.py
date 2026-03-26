@@ -29,6 +29,10 @@ class RFIResponse(BaseModel):
     confidence_score: float  # 0.0–1.0
     review_flag: Optional[str] = None  # None | "REVIEW_CAREFULLY" | "ESCALATED"
     raw_response: str  # original AI output for audit
+    # Red Team audit trail (populated by RFIDrafter when Red Team pass runs)
+    initial_review: Optional[dict] = None
+    red_team_critique: Optional[dict] = None
+    final_output: Optional[dict] = None
 
 
 class RFIProcessingResult(BaseModel):

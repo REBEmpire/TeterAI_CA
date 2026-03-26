@@ -11,6 +11,7 @@ class CapabilityClass(str, Enum):
     EXTRACT = "EXTRACT"
     MULTIMODAL = "MULTIMODAL"
     SUBMITTAL_REVIEW = "SUBMITTAL_REVIEW"
+    RED_TEAM_CRITIQUE = "RED_TEAM_CRITIQUE"
 
 class Attachment(BaseModel):
     file_type: str

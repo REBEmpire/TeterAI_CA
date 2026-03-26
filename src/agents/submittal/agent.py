@@ -20,14 +20,27 @@ from ai_engine.models import AIRequest, CapabilityClass
 from ai_engine.gcp import GCPIntegration
 from knowledge_graph.client import KnowledgeGraphClient
 
+from agents.mixins.red_team import RedTeamMixin
+
 from .reviewer import build_system_prompt, build_user_prompt, parse_review_output
 
 logger = logging.getLogger(__name__)
 
 AGENT_ID = "AGENT-SUBMITTAL-001"
 
+_SUBMITTAL_DOMAIN_CONTEXT = (
+    "This is a submittal review for a construction project.\n"
+    "Focus your critique on:\n"
+    "- Are the specified values vs. submitted values comparison items complete and accurate?\n"
+    "- Are major warnings correctly identified as major (not downgraded to minor)?\n"
+    "- Are there any spec sections that should have been checked but weren't?\n"
+    "- Is the overall recommendation (Approved/Rejected/Revise and Resubmit) correct?\n"
+    "- Are ADA/accessibility compliance items flagged where applicable?\n"
+    "- Is missing information clearly identified?"
+)
 
-class SubmittalReviewAgent:
+
+class SubmittalReviewAgent(RedTeamMixin):
     def __init__(
         self,
         gcp: GCPIntegration,
@@ -107,7 +120,7 @@ class SubmittalReviewAgent:
             self._set_error(db, task_id, str(e))
             return
 
-        # Step 5: Parse each model's output
+        # Step 5: Parse each model's output and run Red Team critique
         model_results: dict[str, dict] = {}
         for tier_num, result in raw_results.items():
             tier_key = f"tier_{tier_num}"
@@ -125,11 +138,31 @@ class SubmittalReviewAgent:
                 }
             else:
                 parsed = parse_review_output(result.content, task_id)
+
+                # Red Team pass — critique the parsed review output.
+                # The submittal review has deeply nested lists (comparison_table, warnings,
+                # missing_info) that cannot be safely auto-reconciled by apply_critique's
+                # top-level key replacement. Instead we carry the critique summary forward
+                # as a "red_team_note" on the final_output so reviewers see both passes.
+                critique = self.run_red_team(
+                    self._engine, parsed, _SUBMITTAL_DOMAIN_CONTEXT, task_id,
+                    agent_id=AGENT_ID,
+                )
+                # final_output carries the original parsed content plus the critique summary
+                # as an advisory note; nested list items are not auto-replaced.
+                final_output = dict(parsed)
+                final_output["red_team_note"] = (
+                    f"[{critique.overall_severity}] {critique.summary}"
+                )
+
                 model_results[tier_key] = {
                     "provider": result.metadata.provider,
                     "model": result.metadata.model,
                     "items": parsed,
                     "latency_ms": result.metadata.latency_ms,
+                    "initial_review": parsed,
+                    "red_team_critique": critique.model_dump(),
+                    "final_output": final_output,
                 }
 
         # Step 6: Store to Firestore

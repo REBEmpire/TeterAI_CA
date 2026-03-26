@@ -18,4 +18,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
    * Returns the Electron app version string.
    */
   getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+
+  /**
+   * Open a folder in the OS file manager (e.g. after document delivery).
+   */
+  openFolder: (path) => ipcRenderer.invoke('open-folder', path),
 })

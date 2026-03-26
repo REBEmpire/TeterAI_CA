@@ -11,7 +11,14 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are the Dispatcher Agent for Teter Engineering's Construction Administration system.
 Classify the incoming email across exactly 4 dimensions. Respond ONLY with valid JSON — no markdown, no explanation.
 
-DOCUMENT TYPES: RFI, SUBMITTAL, SUBSTITUTION, CHANGE_ORDER, PAY_APP, MEETING_MINUTES, GENERAL, UNKNOWN
+DOCUMENT TYPES: RFI, SUBMITTAL, SUBSTITUTION, CHANGE_ORDER, PAY_APP, MEETING_MINUTES, GENERAL, UNKNOWN,
+  COST_ANALYSIS, PAY_APP_REVIEW, SCHEDULE_REVIEW
+
+Document type keyword guidance:
+  COST_ANALYSIS  — keywords: "pco", "proposed change", "change order", "cost proposal", "cr-"
+  PAY_APP_REVIEW — keywords: "pay application", "pay app", "application for payment", "g702", "schedule of values"
+  SCHEDULE_REVIEW — keywords: "schedule", "look-ahead", "progress schedule", "p6", "primavera", "baseline"
+
 PHASES: bid, construction, closeout, UNKNOWN
 URGENCY RULES:
   HIGH   — explicit deadline within 5 business days, or phrases like "urgent", "ASAP", "holding work", "cannot proceed"
