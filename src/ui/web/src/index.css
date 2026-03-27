@@ -16,6 +16,18 @@
   --confidence-high: #2e7d32;
   --confidence-mid: #f9a825;
   --confidence-low: #c62828;
+
+  /* Surface system */
+  --surface-0: #f4f4f5;
+  --surface-1: #ffffff;
+
+  /* Per-card CSS properties (overridden inline) */
+  --card-accent: #d4d4d4;
+  --delay: 0ms;
+
+  /* Per-meter CSS properties (overridden inline) */
+  --bar-width: 0%;
+  --confidence-fill: #2e7d32;
 }
 
 /* Global base styles */
@@ -24,51 +36,87 @@
 }
 
 body {
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: 'Inter', Arial, Helvetica, sans-serif;
   font-weight: 400;
-  background-color: #f7f7f7;
-  color: #313131;
+  background-color: var(--surface-0);
+  color: #1a1a1a;
   margin: 0;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
 }
 
 /* Teter component utility classes */
 @layer components {
   .btn-primary {
     @apply bg-teter-orange hover:bg-teter-orange-dark text-white font-semibold
-           px-4 py-2 rounded transition-colors duration-150 disabled:opacity-50
-           disabled:cursor-not-allowed;
+           px-4 py-2 rounded-md text-sm tracking-wide
+           shadow-sm hover:shadow-md
+           transition-all duration-200
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teter-orange focus-visible:ring-offset-2
+           disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .btn-dark {
     @apply bg-teter-dark hover:bg-teter-dark-soft text-white font-semibold
-           px-4 py-2 rounded transition-colors duration-150 disabled:opacity-50
-           disabled:cursor-not-allowed;
+           px-4 py-2 rounded-md text-sm tracking-wide
+           shadow-sm hover:shadow-md
+           transition-all duration-200
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teter-dark focus-visible:ring-offset-2
+           disabled:opacity-50 disabled:cursor-not-allowed;
   }
 
   .btn-outline {
     @apply border border-teter-gray-mid bg-white hover:bg-teter-gray text-teter-dark
-           font-semibold px-4 py-2 rounded transition-colors duration-150;
+           font-medium px-4 py-2 rounded-md text-sm
+           transition-all duration-200
+           hover:border-teter-gray-text
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teter-orange focus-visible:ring-offset-1;
   }
 
   .btn-danger {
     @apply bg-red-700 hover:bg-red-800 text-white font-semibold
-           px-4 py-2 rounded transition-colors duration-150;
+           px-4 py-2 rounded-md text-sm
+           shadow-sm hover:shadow-md
+           transition-all duration-200;
   }
 
   .card {
-    @apply bg-white rounded border border-teter-gray-mid shadow-card
-           hover:shadow-card-hover transition-shadow duration-150 cursor-pointer;
+    @apply bg-white rounded-[10px] border border-teter-gray-mid/60
+           shadow-card hover:shadow-card-lifted
+           transition-all duration-200 cursor-pointer
+           relative overflow-hidden;
+    animation: slide-up 0.35s cubic-bezier(0.16, 1, 0.3, 1) both;
+    animation-delay: var(--delay, 0ms);
+  }
+
+  .card::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background-color: var(--card-accent, #d4d4d4);
+    border-radius: 10px 0 0 10px;
+  }
+
+  .card:hover {
+    transform: translateY(-1px);
   }
 
   .input {
-    @apply border border-teter-gray-mid rounded px-3 py-2 w-full text-sm
-           focus:outline-none focus:border-teter-orange focus:ring-1 focus:ring-teter-orange;
+    @apply border border-teter-gray-mid rounded-md px-3 py-2 w-full text-sm
+           bg-white text-teter-ink
+           focus:outline-none focus:border-teter-orange focus:ring-1 focus:ring-teter-orange
+           transition-colors duration-150;
   }
 
   .select {
-    @apply border border-teter-gray-mid rounded px-3 py-2 text-sm bg-white
-           focus:outline-none focus:border-teter-orange focus:ring-1 focus:ring-teter-orange;
+    @apply border border-teter-gray-mid rounded-md px-3 py-2 text-sm bg-white
+           text-teter-ink
+           focus:outline-none focus:border-teter-orange focus:ring-1 focus:ring-teter-orange
+           transition-colors duration-150;
   }
 
   .label {
@@ -80,6 +128,14 @@ body {
   }
 
   .tab-inactive {
-    @apply border-b-2 border-transparent text-teter-gray-text hover:text-teter-dark;
+    @apply border-b-2 border-transparent text-teter-gray-text hover:text-teter-dark
+           transition-colors duration-150;
+  }
+
+  /* Stat chip for dashboard summary row */
+  .stat-chip {
+    @apply flex flex-col items-center px-5 py-3 bg-white rounded-[10px]
+           border border-teter-gray-mid/50 min-w-[80px];
+    box-shadow: 0 2px 8px rgba(0,0,0,0.07), inset 0 1px 0 rgba(255,255,255,0.8);
   }
 }
