@@ -1,4 +1,3 @@
-import pytest
 from unittest.mock import patch, MagicMock
 import sys, os
 
@@ -29,7 +28,11 @@ def test_setup_schema_runs_all_statements():
 
             mod.apply_schema(driver)
 
-        # Should have called session.run many times (constraints + indexes)
-        assert session.run.call_count >= 12, (
-            f"Expected >=12 Cypher statements, got {session.run.call_count}"
+        # Should have called session.run exactly once per statement
+        assert session.run.call_count == len(mod.ALL_STATEMENTS), (
+            f"Expected {len(mod.ALL_STATEMENTS)} Cypher statements, got {session.run.call_count}"
         )
+        # Also verify the calls include both constraint and vector index types
+        calls_str = str(session.run.call_args_list)
+        assert "CREATE CONSTRAINT" in calls_str
+        assert "CREATE VECTOR INDEX" in calls_str

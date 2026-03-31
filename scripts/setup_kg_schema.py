@@ -1,6 +1,6 @@
 """
 Apply Neo4j constraints and vector indexes for TeterAI_CA Knowledge Graph.
-Safe to re-run — all statements use IF NOT EXISTS.
+Safe to re-run -- all statements use IF NOT EXISTS.
 
 Usage:
     python scripts/setup_kg_schema.py
@@ -29,6 +29,7 @@ CONSTRAINTS = [
     "CREATE CONSTRAINT ca_document_unique IF NOT EXISTS FOR (n:CADocument) REQUIRE n.drive_file_id IS UNIQUE",
     "CREATE CONSTRAINT party_unique IF NOT EXISTS FOR (n:Party) REQUIRE n.party_id IS UNIQUE",
     "CREATE CONSTRAINT correction_event_unique IF NOT EXISTS FOR (n:CorrectionEvent) REQUIRE n.event_id IS UNIQUE",
+    "CREATE CONSTRAINT rfi_unique IF NOT EXISTS FOR (n:RFI) REQUIRE n.rfi_id IS UNIQUE",
 ]
 
 # ---------------------------------------------------------------------------
@@ -36,34 +37,56 @@ CONSTRAINTS = [
 # ---------------------------------------------------------------------------
 VECTOR_INDEXES = [
     """CREATE VECTOR INDEX spec_section_embeddings IF NOT EXISTS
-       FOR (n:SpecSection) ON (n.embedding)
-       OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
+   FOR (n:SpecSection) ON (n.embedding)
+   OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
     """CREATE VECTOR INDEX contract_clause_embeddings IF NOT EXISTS
-       FOR (n:ContractClause) ON (n.embedding)
-       OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
+   FOR (n:ContractClause) ON (n.embedding)
+   OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
     """CREATE VECTOR INDEX playbook_rule_embeddings IF NOT EXISTS
-       FOR (n:PlaybookRule) ON (n.embedding)
-       OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
+   FOR (n:PlaybookRule) ON (n.embedding)
+   OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
     """CREATE VECTOR INDEX ca_document_embeddings IF NOT EXISTS
-       FOR (n:CADocument) ON (n.embedding)
-       OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
+   FOR (n:CADocument) ON (n.embedding)
+   OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
+    """CREATE VECTOR INDEX rfi_embeddings IF NOT EXISTS
+   FOR (n:RFI) ON (n.embedding)
+   OPTIONS {indexConfig: {`vector.dimensions`: 768, `vector.similarity_function`: 'cosine'}}""",
 ]
 
 ALL_STATEMENTS = CONSTRAINTS + VECTOR_INDEXES
 
 
 def apply_schema(driver: neo4j.Driver) -> None:
-    """Execute every DDL statement. Safe to call multiple times."""
+    """Execute every DDL statement. Safe to call multiple times. Reports all failures."""
+    failed = []
     with driver.session() as session:
         for stmt in ALL_STATEMENTS:
-            session.run(stmt)
-            print(f"  v {stmt.split('IF NOT EXISTS')[0].strip()}")
+            try:
+                session.run(stmt).consume()
+                label = stmt.split("IF NOT EXISTS")[0].strip()
+                print(f"  v {label}")
+            except Exception as e:
+                label = stmt.split("IF NOT EXISTS")[0].strip()
+                print(f"  ERROR: {label}: {e}")
+                failed.append((label, e))
+    if failed:
+        raise RuntimeError(
+            f"{len(failed)} schema statement(s) failed:\n" +
+            "\n".join(f"  - {label}: {err}" for label, err in failed)
+        )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Apply Neo4j KG schema constraints and vector indexes.")
     parser.add_argument("--dry-run", action="store_true", help="Print statements without executing")
     args = parser.parse_args()
+
+    # Dry-run needs no credentials
+    if args.dry_run:
+        print(f"=== DRY RUN -- {len(ALL_STATEMENTS)} statements would be applied ===")
+        for stmt in ALL_STATEMENTS:
+            print(f"  -> {stmt.split(chr(10))[0].strip()}")
+        return
 
     uri = os.environ.get("NEO4J_URI")
     username = os.environ.get("NEO4J_USERNAME")
@@ -72,12 +95,6 @@ def main() -> None:
     if not all([uri, username, password]):
         print("ERROR: NEO4J_URI, NEO4J_USERNAME, and NEO4J_PASSWORD must be set.")
         sys.exit(1)
-
-    if args.dry_run:
-        print(f"=== DRY RUN — {len(ALL_STATEMENTS)} statements would be applied ===")
-        for stmt in ALL_STATEMENTS:
-            print(f"  -> {stmt.split(chr(10))[0].strip()}")
-        return
 
     print(f"Applying {len(ALL_STATEMENTS)} schema statements to {uri} ...")
     driver = neo4j.GraphDatabase.driver(uri, auth=(username, password))
