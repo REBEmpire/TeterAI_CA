@@ -1,5 +1,8 @@
 from typing import Optional, List
-from google.cloud import firestore
+try:
+    from google.cloud import firestore
+except ImportError:
+    firestore = None
 from datetime import datetime, timezone
 
 from src.ai_engine.gcp import gcp_integration

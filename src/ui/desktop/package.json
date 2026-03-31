@@ -2,6 +2,7 @@
   "name": "teterai-desktop",
   "version": "0.1.0",
   "description": "TeterAI CA — Desktop App",
+  "author": "Teter Architects & Engineers",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -40,7 +41,7 @@
         "filter": ["**/*"]
       },
       {
-        "from": "../../dist/teterai-backend",
+        "from": "../../../dist/teterai-backend",
         "to": "backend",
         "filter": ["**/*"]
       }
@@ -53,7 +54,8 @@
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }],
       "icon": "build-resources/icon.ico",
-      "requestedExecutionLevel": "asInvoker"
+      "requestedExecutionLevel": "asInvoker",
+      "signAndEditExecutable": false
     },
     "linux": {
       "target": ["AppImage", "deb"],

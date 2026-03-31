@@ -40,6 +40,7 @@ gcp-credentials.json
 !uv.lock
 # Node
 node_modules/
+dist-electron/
 teterai-ca-prototype-bade85d226e3.json
 TeterAI_CA_Accounts
 Neo4j-2d93324b-Created-2026-03-18

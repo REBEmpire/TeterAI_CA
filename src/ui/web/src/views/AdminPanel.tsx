@@ -5,10 +5,12 @@ import {
   getTaskAudit,
   listProjects,
   listUsers,
+  scanProjects,
   updateModel,
   updateUserRole,
   auditExportUrl,
 } from '../api/client'
+import type { ScanProjectsResponse } from '../api/client'
 import type {
   AuditEntrySummary,
   ModelRegistryEntry,
@@ -30,6 +32,8 @@ function ProjectsTab() {
   const [form, setForm] = useState({ project_number: '', name: '', phase: 'construction' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanResult, setScanResult] = useState<ScanProjectsResponse | null>(null)
 
   useEffect(() => {
     listProjects().then(setProjects).finally(() => setLoading(false))
@@ -51,14 +55,55 @@ function ProjectsTab() {
     }
   }
 
+  async function handleScan() {
+    setScanning(true)
+    setScanResult(null)
+    try {
+      const result = await scanProjects()
+      setScanResult(result)
+      if (result.imported.length > 0) {
+        setProjects((prev) => [...result.imported, ...prev])
+      }
+    } catch (e: unknown) {
+      setScanResult({ imported: [], skipped: 0, errors: [e instanceof Error ? e.message : 'Scan failed.'] })
+    } finally {
+      setScanning(false)
+    }
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-base font-semibold text-teter-dark">Projects</h2>
-        <button className="btn-primary text-sm" onClick={() => setShowForm((v) => !v)}>
-          {showForm ? 'Cancel' : '+ New Project'}
-        </button>
+        <div className="flex gap-2">
+          <button className="btn-primary text-sm" onClick={() => setShowForm((v) => !v)}>
+            {showForm ? 'Cancel' : '+ New Project'}
+          </button>
+          <button className="btn-outline text-sm" onClick={handleScan} disabled={scanning}>
+            {scanning ? 'Scanning\u2026' : 'Scan Folders'}
+          </button>
+        </div>
       </div>
+
+      {scanResult && (
+        <div className="bg-teter-gray rounded p-3 mb-4 text-sm flex items-center gap-3">
+          {scanResult.imported.length > 0 && (
+            <span className="text-green-700 font-semibold">{scanResult.imported.length} imported</span>
+          )}
+          {scanResult.imported.length === 0 && scanResult.errors.length === 0 && (
+            <span className="text-teter-gray-text">No new projects found.</span>
+          )}
+          {scanResult.skipped > 0 && (
+            <span className="text-teter-gray-text">{scanResult.skipped} already registered</span>
+          )}
+          {scanResult.errors.length > 0 && (
+            <span className="text-red-600">{scanResult.errors.join('; ')}</span>
+          )}
+          <button className="ml-auto text-xs text-teter-gray-text hover:text-teter-dark" onClick={() => setScanResult(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {showForm && (
         <div className="bg-teter-gray rounded p-4 mb-4 flex flex-col gap-3">

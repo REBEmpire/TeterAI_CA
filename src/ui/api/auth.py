@@ -18,8 +18,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import jwt
-from google.auth.transport import requests as google_requests
-from google.oauth2 import id_token
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +78,8 @@ def verify_google_id_token(google_id_token_str: str) -> Optional[dict]:
         return None
 
     try:
+        from google.auth.transport import requests as google_requests
+        from google.oauth2 import id_token
         claims = id_token.verify_oauth2_token(
             google_id_token_str,
             google_requests.Request(),

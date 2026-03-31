@@ -91,6 +91,12 @@ class CreateProjectRequest(BaseModel):
     known_senders: list[str] = []
 
 
+class ScanProjectsResponse(BaseModel):
+    imported: list[ProjectSummary]
+    skipped: int
+    errors: list[str]
+
+
 # ---------------------------------------------------------------------------
 # Users (Admin)
 # ---------------------------------------------------------------------------

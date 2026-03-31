@@ -32,6 +32,7 @@ from .models import (
     ModelRegistryEntry,
     ProjectSummary,
     RejectRequest,
+    ScanProjectsResponse,
     TaskDetail,
     TaskSummary,
     TokenResponse,
@@ -1007,7 +1008,90 @@ def create_project(
 
     db.collection("projects").document(project_id).set(project_data)
     logger.info(f"Project created: {project_id} by {current_user.uid}")
+
+    # In desktop mode, also create the canonical folder structure on disk
+    if _DESKTOP_MODE:
+        storage = _get_drive()
+        if storage:
+            try:
+                storage.create_project_folders(project_id, body.name)
+            except Exception as exc:
+                logger.error(f"Failed to create local folders for {project_id}: {exc}")
+
     return ProjectSummary(**project_data)
+
+
+@router.post(
+    "/projects/scan",
+    response_model=ScanProjectsResponse,
+    tags=["projects"],
+    dependencies=[Depends(require_role("ADMIN"))],
+)
+def scan_project_folders(
+    current_user: Annotated[UserInfo, Depends(require_role("ADMIN"))],
+):
+    """Scan local Projects directory for unregistered folders and import them."""
+    if not _DESKTOP_MODE:
+        raise HTTPException(status_code=400, detail="Only available in desktop mode.")
+
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    storage = _get_drive()
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage service unavailable.")
+
+    projects_root = storage._root
+    imported: list[ProjectSummary] = []
+    skipped = 0
+    errors: list[str] = []
+
+    for entry in projects_root.iterdir():
+        if not entry.is_dir():
+            continue
+        parts = entry.name.split(" - ", 1)
+        if len(parts) != 2:
+            continue
+        project_id, project_name = parts[0].strip(), parts[1].strip()
+        if not project_id or not project_name:
+            continue
+
+        doc_ref = db.collection("projects").document(project_id)
+        if doc_ref.get().exists:
+            skipped += 1
+            continue
+
+        try:
+            storage.create_project_folders(project_id, project_name)
+            project_data = {
+                "project_number": project_id,
+                "name": project_name,
+                "phase": "Construction",
+                "known_senders": [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by": current_user.uid,
+                "drive_root_folder_id": "",
+            }
+            doc_ref.set(project_data)
+
+            try:
+                from knowledge_graph.client import kg_client
+                kg_client.upsert_project({
+                    "project_id": project_id,
+                    "project_number": project_id,
+                    "name": project_name,
+                    "phase": "Construction",
+                    "drive_root_folder_id": ""
+                })
+            except Exception as e:
+                logger.warning(f"Failed to upsert scanned project {project_id} to KG: {e}")
+
+            imported.append(ProjectSummary(**project_data))
+        except Exception as e:
+            errors.append(f"Failed importing '{entry.name}': {e}")
+
+    return ScanProjectsResponse(imported=imported, skipped=skipped, errors=errors)
 
 
 # ---------------------------------------------------------------------------

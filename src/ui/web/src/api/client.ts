@@ -129,6 +129,16 @@ export async function createProject(data: {
   return request<ProjectSummary>('POST', '/projects', data)
 }
 
+export interface ScanProjectsResponse {
+  imported: ProjectSummary[]
+  skipped: number
+  errors: string[]
+}
+
+export async function scanProjects(): Promise<ScanProjectsResponse> {
+  return request<ScanProjectsResponse>('POST', '/projects/scan')
+}
+
 // ---------------------------------------------------------------------------
 // Users (Admin)
 // ---------------------------------------------------------------------------

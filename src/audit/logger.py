@@ -3,8 +3,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from google.cloud import firestore
-
 from ai_engine.gcp import gcp_integration
 
 from .models import (
@@ -76,6 +74,7 @@ class AuditLogger:
     def _update_task_index(self, task_id: str, log_id: str) -> None:
         """Update audit_logs_by_task/{task_id} with ArrayUnion. Fail-silent."""
         try:
+            from google.cloud import firestore
             ref = self._db.collection("audit_logs_by_task").document(task_id)
             ref.set({"logs": firestore.ArrayUnion([log_id])}, merge=True)
         except Exception as e:

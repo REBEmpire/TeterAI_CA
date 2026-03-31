@@ -47,9 +47,15 @@ doc-intel = [
     "Pillow>=10.0.0",
     "pdf2image>=1.16.0",
 ]
+# Desktop build tools — only needed to produce the Windows installer
+build = [
+    "pyinstaller>=6.0",
+    "Pillow>=10.0",
+]
 # Convenience group: all extras
 all = [
     "app[cloud]",
     "app[kg]",
     "app[doc-intel]",
+    "app[build]",
 ]
