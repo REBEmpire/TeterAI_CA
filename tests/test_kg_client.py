@@ -61,3 +61,132 @@ def test_kg_search_spec_sections(mock_env, mock_embed, mock_driver):
     mock_embed.assert_called_with("concrete")
     assert len(results) == 1
     assert results[0]["title"] == "Concrete"
+
+
+# ---- upsert_project --------------------------------------------------------
+
+@patch('os.environ.get')
+def test_kg_upsert_project(mock_env, mock_driver):
+    mock_env.side_effect = lambda k, default=None: "value" if k in ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"] else default
+    from src.knowledge_graph.client import KnowledgeGraphClient
+    client = KnowledgeGraphClient()
+
+    mock_session = MagicMock()
+    mock_driver.session.return_value.__enter__.return_value = mock_session
+
+    client.upsert_project({
+        "project_id": "11900",
+        "project_number": "11900",
+        "name": "WHCCD - Instructional Center Ph. 1",
+        "phase": "construction",
+        "drive_root_folder_id": "abc123",
+    })
+
+    mock_session.run.assert_called_once()
+    call_kwargs = mock_session.run.call_args
+    assert "project_id" in call_kwargs.kwargs or "11900" in str(call_kwargs)
+
+
+# ---- document_exists -------------------------------------------------------
+
+@patch('os.environ.get')
+def test_kg_document_exists_false(mock_env, mock_driver):
+    mock_env.side_effect = lambda k, default=None: "value" if k in ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"] else default
+    from src.knowledge_graph.client import KnowledgeGraphClient
+    client = KnowledgeGraphClient()
+
+    mock_session = MagicMock()
+    mock_driver.session.return_value.__enter__.return_value = mock_session
+    mock_record = MagicMock()
+    mock_record.__getitem__ = lambda self, k: 0
+    mock_session.run.return_value.single.return_value = mock_record
+
+    result = client.document_exists("nonexistent-file-id")
+    assert result is False
+
+
+@patch('os.environ.get')
+def test_kg_document_exists_true(mock_env, mock_driver):
+    mock_env.side_effect = lambda k, default=None: "value" if k in ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"] else default
+    from src.knowledge_graph.client import KnowledgeGraphClient
+    client = KnowledgeGraphClient()
+
+    mock_session = MagicMock()
+    mock_driver.session.return_value.__enter__.return_value = mock_session
+    mock_record = MagicMock()
+    mock_record.__getitem__ = lambda self, k: 1
+    mock_session.run.return_value.single.return_value = mock_record
+
+    result = client.document_exists("existing-file-id")
+    assert result is True
+
+
+# ---- get_project_documents -------------------------------------------------
+
+@patch('os.environ.get')
+def test_kg_get_project_documents(mock_env, mock_driver):
+    mock_env.side_effect = lambda k, default=None: "value" if k in ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"] else default
+    from src.knowledge_graph.client import KnowledgeGraphClient
+    client = KnowledgeGraphClient()
+
+    mock_session = MagicMock()
+    mock_driver.session.return_value.__enter__.return_value = mock_session
+
+    mock_record = MagicMock()
+    mock_record.data.return_value = {
+        "doc_id": "11900_RFI_001",
+        "doc_type": "RFI",
+        "filename": "RFI-001_Foundation_Query.pdf",
+    }
+    mock_session.run.return_value.__iter__ = lambda self: iter([mock_record])
+
+    docs = client.get_project_documents("11900", doc_type="RFI")
+    assert len(docs) == 1
+    assert docs[0]["doc_type"] == "RFI"
+
+
+# ---- search_project_documents ----------------------------------------------
+
+@patch('src.knowledge_graph.client.engine.generate_embedding')
+@patch('os.environ.get')
+def test_kg_search_project_documents(mock_env, mock_embed, mock_driver):
+    mock_env.side_effect = lambda k, default=None: "value" if k in ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"] else default
+    from src.knowledge_graph.client import KnowledgeGraphClient
+    client = KnowledgeGraphClient()
+
+    mock_embed.return_value = [0.1] * 768
+
+    mock_session = MagicMock()
+    mock_driver.session.return_value.__enter__.return_value = mock_session
+    mock_record = MagicMock()
+    mock_record.data.return_value = {"doc_id": "11900_RFI_001", "summary": "Query about foundations."}
+    mock_session.run.return_value.__iter__ = lambda self: iter([mock_record])
+
+    results = client.search_project_documents("foundation detail", project_id="11900", top_k=3)
+
+    mock_embed.assert_called_with("foundation detail")
+    assert len(results) == 1
+    assert results[0]["doc_id"] == "11900_RFI_001"
+
+
+# ---- no-op mode (no env vars) ----------------------------------------------
+
+def test_kg_client_noop_without_env():
+    """Client must not raise when NEO4J_* vars are absent — returns empty lists."""
+    import sys
+
+    for mod in list(sys.modules.keys()):
+        if "knowledge_graph" in mod:
+            del sys.modules[mod]
+
+    import os
+    old = {k: os.environ.pop(k) for k in ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"] if k in os.environ}
+    try:
+        from src.knowledge_graph.client import KnowledgeGraphClient
+        client = KnowledgeGraphClient()
+        assert client._driver is None
+        assert client.get_document_workflow("RFI") == []
+        assert client.get_project_documents("11900") == []
+        assert client.document_exists("abc") is False
+    finally:
+        os.environ.update(old)

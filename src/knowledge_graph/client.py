@@ -879,5 +879,179 @@ class KnowledgeGraphClient:
 
         return stats
 
+    # ------------------------------------------------------------------
+    # Project Document Layer (Tier 3 extension)
+    # ------------------------------------------------------------------
+
+    def upsert_project(self, project_data: dict) -> None:
+        """MERGE a Project node. Keys: project_id, project_number, name, phase, drive_root_folder_id."""
+        if not self._driver:
+            return
+        with self._driver.session() as session:
+            session.run(
+                """
+                MERGE (p:Project {project_id: $project_id})
+                SET p.project_number       = $project_number,
+                    p.name                 = $name,
+                    p.phase                = $phase,
+                    p.drive_root_folder_id = $drive_root_folder_id
+                """,
+                **project_data,
+            )
+
+    def document_exists(self, drive_file_id: str) -> bool:
+        """Return True if a CADocument with this drive_file_id already exists in the graph."""
+        if not self._driver:
+            return False
+        with self._driver.session() as session:
+            result = session.run(
+                "MATCH (d:CADocument {drive_file_id: $drive_file_id}) RETURN count(d) AS cnt",
+                drive_file_id=drive_file_id,
+            )
+            record = result.single()
+            return (record["cnt"] > 0) if record else False
+
+    def upsert_document(self, doc_data: dict, project_id: str) -> None:
+        """
+        MERGE a CADocument node and link it to its Project.
+
+        Required keys in doc_data:
+            drive_file_id, doc_id, filename, drive_folder_path, doc_type,
+            doc_number, phase, date_submitted, date_responded,
+            summary, embedding, embedding_model, metadata_only
+        """
+        if not self._driver:
+            return
+        with self._driver.session() as session:
+            session.run(
+                """
+                MERGE (d:CADocument {drive_file_id: $drive_file_id})
+                SET d.doc_id             = $doc_id,
+                    d.filename           = $filename,
+                    d.drive_folder_path  = $drive_folder_path,
+                    d.doc_type           = $doc_type,
+                    d.doc_number         = $doc_number,
+                    d.phase              = $phase,
+                    d.date_submitted     = $date_submitted,
+                    d.date_responded     = $date_responded,
+                    d.summary            = $summary,
+                    d.embedding          = $embedding,
+                    d.embedding_model    = $embedding_model,
+                    d.embedding_updated_at = datetime(),
+                    d.metadata_only      = $metadata_only
+                WITH d
+                MATCH (p:Project {project_id: $project_id})
+                MERGE (p)-[:HAS_DOCUMENT]->(d)
+                """,
+                **doc_data,
+                project_id=project_id,
+            )
+
+    def upsert_party(self, party_data: dict) -> None:
+        """MERGE a Party node. Keys: party_id, name, type."""
+        if not self._driver:
+            return
+        with self._driver.session() as session:
+            session.run(
+                """
+                MERGE (party:Party {party_id: $party_id})
+                SET party.name = $name,
+                    party.type = $type
+                """,
+                **party_data,
+            )
+
+    def link_document_to_party(self, drive_file_id: str, party_id: str) -> None:
+        """Create (:CADocument)-[:SUBMITTED_BY]->(:Party) relationship."""
+        if not self._driver:
+            return
+        with self._driver.session() as session:
+            session.run(
+                """
+                MATCH (d:CADocument {drive_file_id: $drive_file_id})
+                MATCH (party:Party {party_id: $party_id})
+                MERGE (d)-[:SUBMITTED_BY]->(party)
+                """,
+                drive_file_id=drive_file_id,
+                party_id=party_id,
+            )
+
+    def get_project_documents(
+        self, project_id: str, doc_type: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Return CADocument dicts for a project, optionally filtered by doc_type."""
+        if not self._driver:
+            return []
+        with self._driver.session() as session:
+            if doc_type:
+                result = session.run(
+                    """
+                    MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(d:CADocument {doc_type: $doc_type})
+                    RETURN d.doc_id AS doc_id, d.drive_file_id AS drive_file_id,
+                           d.filename AS filename, d.doc_type AS doc_type,
+                           d.doc_number AS doc_number, d.phase AS phase,
+                           d.date_submitted AS date_submitted, d.summary AS summary,
+                           d.metadata_only AS metadata_only
+                    ORDER BY d.date_submitted
+                    """,
+                    project_id=project_id,
+                    doc_type=doc_type,
+                )
+            else:
+                result = session.run(
+                    """
+                    MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(d:CADocument)
+                    RETURN d.doc_id AS doc_id, d.drive_file_id AS drive_file_id,
+                           d.filename AS filename, d.doc_type AS doc_type,
+                           d.doc_number AS doc_number, d.phase AS phase,
+                           d.date_submitted AS date_submitted, d.summary AS summary,
+                           d.metadata_only AS metadata_only
+                    ORDER BY d.date_submitted
+                    """,
+                    project_id=project_id,
+                )
+            return [record.data() for record in result]
+
+    def search_project_documents(
+        self,
+        query: str,
+        project_id: Optional[str] = None,
+        top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Semantic search over CADocument nodes, optionally scoped to a project."""
+        if not self._driver:
+            return []
+        embedding = engine.generate_embedding(query)
+        with self._driver.session() as session:
+            if project_id:
+                result = session.run(
+                    """
+                    CALL db.index.vector.queryNodes('ca_document_embeddings', $top_k, $embedding)
+                    YIELD node, score
+                    WHERE score > 0.70
+                    MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(node)
+                    RETURN node.doc_id AS doc_id, node.filename AS filename,
+                           node.doc_type AS doc_type, node.summary AS summary, score
+                    ORDER BY score DESC
+                    """,
+                    top_k=top_k,
+                    embedding=embedding,
+                    project_id=project_id,
+                )
+            else:
+                result = session.run(
+                    """
+                    CALL db.index.vector.queryNodes('ca_document_embeddings', $top_k, $embedding)
+                    YIELD node, score
+                    WHERE score > 0.70
+                    RETURN node.doc_id AS doc_id, node.filename AS filename,
+                           node.doc_type AS doc_type, node.summary AS summary, score
+                    ORDER BY score DESC
+                    """,
+                    top_k=top_k,
+                    embedding=embedding,
+                )
+            return [record.data() for record in result]
+
 
 kg_client = KnowledgeGraphClient()
