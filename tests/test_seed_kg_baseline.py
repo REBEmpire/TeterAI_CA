@@ -52,3 +52,18 @@ def test_seed_tier1_creates_agents_and_rules(mock_embed):
     assert counts["agents"] == 2
     assert counts["rules"] == len(mod.DISPATCHER_RULES) + len(mod.RFI_RULES)
     assert counts["escalation_criteria"] == 2
+
+
+def test_merge_node_rejects_invalid_label():
+    """_merge_node must raise ValueError for labels not in _VALID_LABELS."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "seed_kg_baseline",
+        os.path.join(os.path.dirname(__file__), '..', 'scripts', 'seed_kg_baseline.py')
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    session = MagicMock()
+    with pytest.raises(ValueError, match="Invalid node label"):
+        mod._merge_node(session, "INJECTED_LABEL", "id", {"id": "x"})

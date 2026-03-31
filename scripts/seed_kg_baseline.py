@@ -172,10 +172,11 @@ def _merge_node(session, label: str, id_key: str, data: dict) -> None:
     if label not in _VALID_LABELS:
         raise ValueError(f"Invalid node label: {label!r}. Must be one of: {sorted(_VALID_LABELS)}")
     props_set = ", ".join(f"n.{k} = ${k}" for k in data if k != id_key)
-    session.run(
-        f"MERGE (n:{label} {{{id_key}: ${id_key}}}) SET {props_set}",
-        **data,
-    )
+    if props_set:
+        cypher = f"MERGE (n:{label} {{{id_key}: ${id_key}}}) SET {props_set}"
+    else:
+        cypher = f"MERGE (n:{label} {{{id_key}: ${id_key}}})"
+    session.run(cypher, **data)
 
 
 def seed_tier2(driver: neo4j.Driver, embed: bool = True) -> dict:
