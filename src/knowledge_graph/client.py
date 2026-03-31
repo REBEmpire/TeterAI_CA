@@ -84,28 +84,6 @@ class KnowledgeGraphClient:
         if not self._driver:
             return []
 
-        query = """
-        MATCH (d:DocumentType {type_id: $doc_type})-[:FOLLOWS_WORKFLOW]->(start:WorkflowStep)
-
-        // Find the full path by following NEXT_STEP relationships
-        // The *0.. signifies 0 or more hops
-        MATCH path = (start)-[:NEXT_STEP*0..]->(step:WorkflowStep)
-
-        // Ensure this path goes all the way to the end (a node with no NEXT_STEP)
-        WHERE NOT (step)-[:NEXT_STEP]->()
-
-        // Extract the nodes from the longest path
-        WITH nodes(path) AS workflow_steps
-
-        UNWIND workflow_steps AS step
-        RETURN step.step_id AS step_id,
-               step.name AS name,
-               step.description AS description,
-               step.responsible_party AS responsible_party,
-               step.sequence AS sequence
-        ORDER BY step.sequence ASC
-        """
-
         # A simpler query that just gets all steps associated with doc_type if sequences are reliable
         simple_query = """
         MATCH (d:DocumentType {type_id: $doc_type})-[:FOLLOWS_WORKFLOW]->(first:WorkflowStep)
@@ -926,6 +904,7 @@ class KnowledgeGraphClient:
         if not self._driver:
             return
         with self._driver.session() as session:
+            # Call 1: upsert the document node
             session.run(
                 """
                 MERGE (d:CADocument {drive_file_id: $drive_file_id})
@@ -942,11 +921,17 @@ class KnowledgeGraphClient:
                     d.embedding_model    = $embedding_model,
                     d.embedding_updated_at = datetime(),
                     d.metadata_only      = $metadata_only
-                WITH d
+                """,
+                **doc_data,
+            )
+            # Call 2: link to project
+            session.run(
+                """
+                MATCH (d:CADocument {drive_file_id: $drive_file_id})
                 MATCH (p:Project {project_id: $project_id})
                 MERGE (p)-[:HAS_DOCUMENT]->(d)
                 """,
-                **doc_data,
+                drive_file_id=doc_data["drive_file_id"],
                 project_id=project_id,
             )
 
@@ -1020,18 +1005,23 @@ class KnowledgeGraphClient:
         query: str,
         project_id: Optional[str] = None,
         top_k: int = 5,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict]:
         """Semantic search over CADocument nodes, optionally scoped to a project."""
         if not self._driver:
             return []
-        embedding = engine.generate_embedding(query)
+        try:
+            embedding = engine.generate_embedding(query)
+        except Exception as e:
+            logger.error(f"Embedding generation failed for search_project_documents: {e}")
+            return []
+        threshold = float(os.environ.get("KG_EMBEDDING_SIMILARITY_THRESHOLD", "0.70"))
         with self._driver.session() as session:
             if project_id:
                 result = session.run(
                     """
                     CALL db.index.vector.queryNodes('ca_document_embeddings', $top_k, $embedding)
                     YIELD node, score
-                    WHERE score > 0.70
+                    WHERE score > $threshold
                     MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(node)
                     RETURN node.doc_id AS doc_id, node.filename AS filename,
                            node.doc_type AS doc_type, node.summary AS summary, score
@@ -1040,19 +1030,21 @@ class KnowledgeGraphClient:
                     top_k=top_k,
                     embedding=embedding,
                     project_id=project_id,
+                    threshold=threshold,
                 )
             else:
                 result = session.run(
                     """
                     CALL db.index.vector.queryNodes('ca_document_embeddings', $top_k, $embedding)
                     YIELD node, score
-                    WHERE score > 0.70
+                    WHERE score > $threshold
                     RETURN node.doc_id AS doc_id, node.filename AS filename,
                            node.doc_type AS doc_type, node.summary AS summary, score
                     ORDER BY score DESC
                     """,
                     top_k=top_k,
                     embedding=embedding,
+                    threshold=threshold,
                 )
             return [record.data() for record in result]
 

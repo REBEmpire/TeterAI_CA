@@ -84,7 +84,7 @@ def test_kg_upsert_project(mock_env, mock_driver):
 
     mock_session.run.assert_called_once()
     call_kwargs = mock_session.run.call_args
-    assert "project_id" in call_kwargs.kwargs or "11900" in str(call_kwargs)
+    assert mock_session.run.call_args.kwargs.get("project_id") == "11900"
 
 
 # ---- document_exists -------------------------------------------------------
