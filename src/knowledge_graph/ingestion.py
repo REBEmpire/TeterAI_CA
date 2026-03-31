@@ -13,7 +13,6 @@ import io
 import json
 import logging
 import re
-import uuid
 from typing import Optional
 
 from ai_engine.engine import engine
@@ -298,7 +297,9 @@ class DriveToKGIngester:
         # --- Assemble document data ---
         summary = (ai_data or {}).get("summary") or f"{doc_type} document: {filename}"
         doc_number = (ai_data or {}).get("doc_number")
-        doc_id = f"{project_id}_{doc_type}_{doc_number or file_id[:8]}"
+        # Always include file_id suffix to guarantee uniqueness across Drive files
+        # that may share the same AI-extracted doc_number (e.g. re-issued RFIs).
+        doc_id = f"{project_id}_{doc_type}_{doc_number}_{file_id[:8]}" if doc_number else f"{project_id}_{doc_type}_{file_id[:8]}"
 
         # --- Generate embedding ---
         embedding: list = []
