@@ -145,45 +145,48 @@ class KnowledgeGraphClient:
 
     def log_correction(
         self,
-        task_id: str,
+        event_id: str,
         agent_id: str,
-        correction_type: str,
+        task_id: str,
         original_text: str,
-        edited_text: str,
-        reviewed_by: str = "",
-        event_id: str = "",
+        corrected_text: str,
+        correction_type: str,
+        reviewed_by: str,
+        rule_id: Optional[str] = None,
     ) -> None:
+        """Persist a CorrectionEvent node and optionally link it to a PlaybookRule."""
         if not self._driver:
             return
-
-        import uuid as _uuid
-        query = """
-        CREATE (c:CorrectionEvent {
-            event_id: $event_id,
-            agent_id: $agent_id,
-            task_id: $task_id,
-            original_text: $original_text,
-            corrected_text: $corrected_text,
-            correction_type: $correction_type,
-            reviewed_by: $reviewed_by,
-            timestamp: datetime()
-        })
-        WITH c
-        MATCH (a:Agent {agent_id: $agent_id})-[:HAS_RULE]->(r:PlaybookRule)
-        WHERE r.priority = 1
-        CREATE (c)-[:UPDATES]->(r)
-        """
-
         with self._driver.session() as session:
-            session.run(query, {
-                "event_id": event_id or str(_uuid.uuid4()),
-                "agent_id": agent_id,
-                "task_id": task_id,
-                "original_text": original_text,
-                "corrected_text": edited_text,
-                "correction_type": correction_type,
-                "reviewed_by": reviewed_by,
-            })
+            session.run(
+                """
+                MERGE (c:CorrectionEvent {event_id: $event_id})
+                SET c.agent_id         = $agent_id,
+                    c.task_id          = $task_id,
+                    c.original_text    = $original_text,
+                    c.corrected_text   = $corrected_text,
+                    c.correction_type  = $correction_type,
+                    c.reviewed_by      = $reviewed_by,
+                    c.timestamp        = datetime()
+                """,
+                event_id=event_id,
+                agent_id=agent_id,
+                task_id=task_id,
+                original_text=original_text,
+                corrected_text=corrected_text,
+                correction_type=correction_type,
+                reviewed_by=reviewed_by,
+            )
+            if rule_id:
+                session.run(
+                    """
+                    MATCH (c:CorrectionEvent {event_id: $event_id})
+                    MATCH (r:PlaybookRule {rule_id: $rule_id})
+                    MERGE (c)-[:UPDATES]->(r)
+                    """,
+                    event_id=event_id,
+                    rule_id=rule_id,
+                )
 
     def setup_rfi_schema(self) -> None:
         """Creates Project and RFI constraints and vector index. Idempotent."""
