@@ -163,7 +163,14 @@ RFI_ESCALATION = {
 # Seeding helpers
 # ===========================================================================
 
+_VALID_LABELS = frozenset({
+    "Agent", "PlaybookRule", "EscalationCriteria", "DocumentType", "WorkflowStep",
+    "SpecSection", "ContractClause", "Project", "CADocument", "Party", "CorrectionEvent",
+})
+
 def _merge_node(session, label: str, id_key: str, data: dict) -> None:
+    if label not in _VALID_LABELS:
+        raise ValueError(f"Invalid node label: {label!r}. Must be one of: {sorted(_VALID_LABELS)}")
     props_set = ", ".join(f"n.{k} = ${k}" for k in data if k != id_key)
     session.run(
         f"MERGE (n:{label} {{{id_key}: ${id_key}}}) SET {props_set}",
@@ -278,6 +285,7 @@ def seed_tier1(driver: neo4j.Driver, embed: bool = True) -> dict:
 
         for esc in [DISPATCHER_ESCALATION, RFI_ESCALATION]:
             _merge_node(session, "EscalationCriteria", "criteria_id", esc)
+            counts["escalation_criteria"] += 1
         session.run(
             "MATCH (a:Agent {agent_id: 'AGENT-DISPATCH-001'}) "
             "MATCH (e:EscalationCriteria {criteria_id: 'DISPATCH-ESC-001'}) "
@@ -288,7 +296,6 @@ def seed_tier1(driver: neo4j.Driver, embed: bool = True) -> dict:
             "MATCH (e:EscalationCriteria {criteria_id: 'RFI-ESC-001'}) "
             "MERGE (a)-[:ESCALATES_ON]->(e)"
         )
-        counts["escalation_criteria"] = 2
 
     return counts
 

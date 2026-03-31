@@ -30,7 +30,8 @@ def test_seed_tier2_creates_document_types(mock_embed):
     driver, session = _make_driver()
     counts = mod.seed_tier2(driver, embed=False)
     assert counts["document_types"] == 10
-    assert counts["workflow_steps"] > 0
+    assert counts["workflow_steps"] == len(mod.RFI_WORKFLOW_STEPS) + (len(mod.DOCUMENT_TYPES) - 1)
+    assert counts["workflow_edges"] == len(mod.RFI_WORKFLOW_STEPS) - 1  # 6 NEXT_STEP edges for 7 steps
     assert session.run.call_count > 0
 
 
