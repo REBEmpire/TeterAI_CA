@@ -85,6 +85,33 @@ export function NavBar() {
               </svg>
             }
           />
+          {/* Project Intelligence nav item */}
+          <NavIconLink
+            to="/project-intelligence"
+            label="Project Intelligence"
+            active={location.pathname.startsWith('/project-intelligence')}
+            icon={
+              <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                <rect x="3"  y="12" width="4" height="9" rx="1" />
+                <rect x="10" y="7"  width="4" height="14" rx="1" />
+                <rect x="17" y="3"  width="4" height="18" rx="1" />
+              </svg>
+            }
+          />
+          {/* Pre-Bid Lessons Learned nav item */}
+          <NavIconLink
+            to="/prebid-review"
+            label="Pre-Bid Review"
+            active={location.pathname.startsWith('/prebid-review')}
+            icon={
+              <svg className="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round"
+                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2" />
+                <rect x="9" y="3" width="6" height="4" rx="1" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4" />
+              </svg>
+            }
+          />
           {DESKTOP_MODE && navLink('/settings', 'Settings')}
           {!DESKTOP_MODE && (
             <RoleGuard roles={['ADMIN']}>

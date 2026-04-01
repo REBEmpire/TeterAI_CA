@@ -251,3 +251,160 @@ export async function uploadDocument(
 
   return res.json() as Promise<UploadDocumentResponse>
 }
+
+// ---------------------------------------------------------------------------
+// Project Intelligence Dashboard
+// ---------------------------------------------------------------------------
+
+export interface ProjectIntelligence {
+  project_id: string
+  total_docs: number
+  responded_docs: number
+  response_rate: number          // 0–1
+  metadata_only_count: number
+  metadata_only_ratio: number    // 0–1
+  party_count: number
+  earliest_date?: string | null
+  latest_date?: string | null
+  doc_counts_by_type: Record<string, number>
+}
+
+export interface PartyEntry {
+  party_id: string
+  name: string
+  type: string
+  submissions: Array<{ doc_type: string; count: number }>
+  total_submissions: number
+}
+
+export interface TimelineMonth {
+  month: string                        // "YYYY-MM"
+  counts: Record<string, number>       // doc_type → count
+}
+
+export interface CrossProjectEntry {
+  project_id: string
+  name: string
+  project_number: string
+  total_docs: number
+  responded_docs: number
+  response_rate: number
+  metadata_only_count: number
+  party_count: number
+}
+
+export interface AINarrative {
+  overview: string
+  document_status: string
+  key_parties: string
+  risk_flags: string
+  recommendations: string
+}
+
+export interface AISummaryResponse {
+  project_id: string
+  narrative: AINarrative
+  generated_at: string
+  model_used: string
+  tier_used: number
+}
+
+export async function getProjectIntelligence(
+  projectId: string,
+): Promise<ProjectIntelligence> {
+  return request<ProjectIntelligence>('GET', `/projects/${projectId}/intelligence`)
+}
+
+export async function getPartyNetwork(
+  projectId: string,
+): Promise<{ parties: PartyEntry[] }> {
+  return request<{ parties: PartyEntry[] }>('GET', `/projects/${projectId}/party-network`)
+}
+
+export async function getDocumentTimeline(
+  projectId: string,
+): Promise<{ months: TimelineMonth[] }> {
+  return request<{ months: TimelineMonth[] }>('GET', `/projects/${projectId}/timeline`)
+}
+
+export async function compareProjects(): Promise<{ projects: CrossProjectEntry[] }> {
+  return request<{ projects: CrossProjectEntry[] }>('GET', '/projects/compare')
+}
+
+export async function generateAISummary(
+  projectId: string,
+): Promise<AISummaryResponse> {
+  return request<AISummaryResponse>('POST', `/projects/${projectId}/ai-summary`)
+}
+
+// ---------------------------------------------------------------------------
+// Pre-Bid Lessons Learned
+//
+// POST /prebid-lessons mines completed-project RFI / Change Order history via
+// vector similarity search and synthesises findings into an AI pre-bid checklist.
+//
+// Usage:
+//   const result = await getPreBidLessons(
+//     "exterior window waterproofing and head flashing",
+//     ["11900", "12556"]
+//   )
+//   // result.similar_docs   — historically similar issues ranked by score
+//   // result.doc_type_counts — volume by doc type in source projects
+//   // result.checklist       — AI-generated {summary, design_risks,
+//   //                           spec_sections_to_clarify, bid_checklist}
+// ---------------------------------------------------------------------------
+
+export interface PreBidSimilarDoc {
+  doc_id: string
+  filename: string
+  doc_type: string
+  doc_number?: string | null
+  summary?: string | null
+  date_submitted?: string | null
+  project_id: string
+  project_name?: string | null
+  project_number?: string | null
+  score: number
+}
+
+export interface PreBidChecklist {
+  summary: string
+  design_risks: string
+  spec_sections_to_clarify: string
+  bid_checklist: string
+}
+
+export interface PreBidLessonsResponse {
+  query_text: string
+  source_project_ids: string[]
+  similar_docs: PreBidSimilarDoc[]
+  doc_type_counts: Record<string, number>
+  checklist: PreBidChecklist
+  generated_at: string
+  model_used: string
+  tier_used: number
+}
+
+/**
+ * Run a Pre-Bid Lessons Learned review.
+ *
+ * Embeds `queryText` and searches the Neo4j `ca_document_embeddings` vector index
+ * for semantically similar historical RFIs and Change Orders from `sourceProjectIds`.
+ * An AI model (CapabilityClass.ANALYZE) then synthesises findings into an actionable
+ * checklist the design team can use before bid documents go out.
+ *
+ * @param queryText        Plain-English design concern (e.g. "exterior window flashing").
+ * @param sourceProjectIds IDs of completed projects to mine (must match Neo4j project_id).
+ * @param docTypes         Optional doc type filter. Defaults to RFI / CO variants.
+ */
+export async function getPreBidLessons(
+  queryText: string,
+  sourceProjectIds: string[],
+  docTypes?: string[],
+): Promise<PreBidLessonsResponse> {
+  return request<PreBidLessonsResponse>('POST', '/prebid-lessons', {
+    query_text: queryText,
+    source_project_ids: sourceProjectIds,
+    ...(docTypes ? { doc_types: docTypes } : {}),
+  })
+}

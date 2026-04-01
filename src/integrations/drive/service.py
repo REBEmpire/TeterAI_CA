@@ -157,17 +157,44 @@ class DriveService:
 
         self.service.files().update(**update_kwargs).execute()
 
-    def download_file(self, file_id: str) -> Tuple[bytes, str]:
-        """Download file bytes and mime_type from Drive by file ID."""
+    def download_file(self, file_id: str, timeout: int = 120) -> Tuple[bytes, str]:
+        """Download file bytes and mime_type from Drive by file ID.
+
+        Args:
+            file_id: Google Drive file ID.
+            timeout: Max seconds to wait for the full download (default 120s).
+                     Raises TimeoutError if exceeded — callers should treat this
+                     as a transient failure and skip the file (metadata_only=True).
+        """
+        import threading
+
         meta = self.service.files().get(fileId=file_id, fields='mimeType').execute()
         mime_type = meta.get('mimeType', 'application/octet-stream')
         request = self.service.files().get_media(fileId=file_id)
         buf = io.BytesIO()
         downloader = MediaIoBaseDownload(buf, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        return buf.getvalue(), mime_type
+
+        result: dict = {}
+
+        def _do_download():
+            try:
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+                result['bytes'] = buf.getvalue()
+                result['mime'] = mime_type
+            except Exception as exc:
+                result['error'] = exc
+
+        t = threading.Thread(target=_do_download, daemon=True)
+        t.start()
+        t.join(timeout)
+
+        if t.is_alive():
+            raise TimeoutError(f"Download timed out after {timeout}s")
+        if 'error' in result:
+            raise result['error']
+        return result['bytes'], result['mime']
 
     def list_folder_files(self, folder_id: str) -> list[dict]:
         """Returns list of {id, name, mimeType} dicts for all non-trashed files in the given folder."""

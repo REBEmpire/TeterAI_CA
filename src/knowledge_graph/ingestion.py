@@ -12,7 +12,13 @@ Text extraction hierarchy:
 import io
 import json
 import logging
+import os
 import re
+import subprocess
+import sys
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 
 from ai_engine.engine import engine
@@ -104,19 +110,46 @@ def extract_text(content: bytes, mime_type: str) -> tuple[str, bool]:
             return "", True
 
     if mime_type == "application/pdf":
+        # Guard: require at least the 4-byte PDF magic number before parsing.
+        if not content or len(content) < 4 or not content.startswith(b"%PDF"):
+            logger.warning("PDF extraction skipped: content is empty or not a valid PDF")
+            return "", True
+
+        # Run pypdf in a subprocess so a segfault in its C extension (e.g. on a
+        # corrupted PDF) cannot kill the ingestion worker process.
+        tmp_path = None
         try:
-            import pypdf
-            reader = pypdf.PdfReader(io.BytesIO(content))
-            parts = []
-            for page in reader.pages:
-                t = page.extract_text()
-                if t:
-                    parts.append(t)
-            text = "\n".join(parts)
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                f.write(content)
+                tmp_path = f.name
+
+            script = (
+                "import pypdf, io, sys\n"
+                f"data = open({repr(tmp_path)}, 'rb').read()\n"
+                "r = pypdf.PdfReader(io.BytesIO(data))\n"
+                "print('\\n'.join(p.extract_text() or '' for p in r.pages))\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode != 0:
+                logger.warning(f"PDF subprocess failed (exit {proc.returncode}): {proc.stderr[:200]}")
+                return "", True
+            text = proc.stdout
             return text, len(text.strip()) < 50
+        except subprocess.TimeoutExpired:
+            logger.warning("PDF extraction timed out (60s) — marking metadata_only")
+            return "", True
         except Exception as e:
             logger.warning(f"PDF extraction failed: {e}")
             return "", True
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     if mime_type in (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -155,9 +188,15 @@ class DriveToKGIngester:
     Walks a project's Drive folder hierarchy and ingests each document into Neo4j.
     """
 
+    # Number of concurrent worker threads for parallel file processing.
+    # Each worker independently downloads, extracts, calls AI, and writes to Neo4j.
+    # Configurable via env var; default 4.  Set to 1 to disable concurrency.
+    MAX_WORKERS = int(os.environ.get("INGEST_MAX_WORKERS", "4"))
+
     def __init__(self):
         self._kg = KnowledgeGraphClient()
         self._drive = DriveService()
+        self._stats_lock = threading.Lock()
 
     def ingest_project(
         self,
@@ -190,16 +229,17 @@ class DriveToKGIngester:
                     if fid:
                         folder_map[path] = fid
 
+        # Collect all work items first, filtering already-ingested files
+        work_items = []
         for folder_path, folder_id in folder_map.items():
-            # Skip Agent Workspace
             if any(folder_path.startswith(skip) for skip in SKIP_PREFIXES):
                 continue
-
             try:
                 files = self._drive.list_folder_files(folder_id)
             except Exception as e:
                 logger.error(f"[{project_id}] Failed to list {folder_path}: {e}")
-                stats["errors"] += 1
+                with self._stats_lock:
+                    stats["errors"] += 1
                 continue
 
             for file_meta in files:
@@ -207,27 +247,47 @@ class DriveToKGIngester:
                 filename  = file_meta["name"]
                 mime_type = file_meta.get("mimeType", "application/octet-stream")
 
-                # Idempotency: skip if already in graph
                 if self._kg.document_exists(file_id):
                     logger.debug(f"[{project_id}] Skipping existing: {filename}")
-                    stats["skipped"] += 1
+                    with self._stats_lock:
+                        stats["skipped"] += 1
                     continue
 
-                result = self._process_file(
-                    project_id=project_id,
-                    file_id=file_id,
-                    filename=filename,
-                    mime_type=mime_type,
-                    folder_path=folder_path,
-                    dry_run=dry_run,
-                )
-                if result == "written":
-                    stats["written"] += 1
-                elif result == "metadata_only":
-                    stats["written"] += 1
-                    stats["metadata_only"] += 1
-                elif result == "error":
-                    stats["errors"] += 1
+                work_items.append((file_id, filename, mime_type, folder_path))
+
+        if not work_items:
+            return stats
+
+        logger.info(f"[{project_id}] Processing {len(work_items)} new files with {self.MAX_WORKERS} workers.")
+
+        def _process_one(item):
+            file_id, filename, mime_type, folder_path = item
+            return self._process_file(
+                project_id=project_id,
+                file_id=file_id,
+                filename=filename,
+                mime_type=mime_type,
+                folder_path=folder_path,
+                dry_run=dry_run,
+            )
+
+        with ThreadPoolExecutor(max_workers=self.MAX_WORKERS) as pool:
+            futures = {pool.submit(_process_one, item): item for item in work_items}
+            for future in as_completed(futures):
+                try:
+                    result = future.result()
+                except Exception as exc:
+                    _, filename, _, _ = futures[future]
+                    logger.error(f"[{project_id}] Unhandled exception for {filename}: {exc}")
+                    result = "error"
+                with self._stats_lock:
+                    if result == "written":
+                        stats["written"] += 1
+                    elif result == "metadata_only":
+                        stats["written"] += 1
+                        stats["metadata_only"] += 1
+                    elif result == "error":
+                        stats["errors"] += 1
 
         return stats
 
@@ -265,6 +325,16 @@ class DriveToKGIngester:
                 else:
                     raw_bytes = content.encode("utf-8")
                     effective_mime = "text/plain"
+            elif mime_type == "application/vnd.google-apps.spreadsheet":
+                # Google Sheets: export as CSV
+                content = self._drive.service.files().export(
+                    fileId=file_id, mimeType="text/csv"
+                ).execute()
+                if isinstance(content, bytes):
+                    raw_bytes = content
+                else:
+                    raw_bytes = content.encode("utf-8")
+                effective_mime = "text/plain"
             else:
                 raw_bytes, effective_mime = self._drive.download_file(file_id)
         except Exception as e:

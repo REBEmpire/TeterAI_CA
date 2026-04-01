@@ -1,32 +1,120 @@
+"""
+KnowledgeGraphClient — all Neo4j Aura queries for TeterAI_CA.
+
+Connection Resilience
+---------------------
+Long-running processes (ingestion, batch analysis) can hold idle Neo4j connections
+that the Windows TCP stack kills after a timeout (error 10053 / ConnectionAbortedError).
+All write and analytics methods use the ``_run_with_retry`` + ``_reconnect`` + ``_session``
+pattern to recover transparently.
+
+  _run_with_retry(fn)   Calls fn() up to _MAX_RETRIES times on connection errors.
+  _reconnect()          Closes and reopens the Neo4j driver.
+  _session()            Returns a fresh session, reconnecting the driver if needed.
+
+``max_connection_lifetime=300`` rotates connections every 5 minutes to stay ahead of
+any network-layer idle timeouts.
+
+Vector Indexes (768-dim Vertex AI text-embedding-004)
+-----------------------------------------------------
+  ca_document_embeddings   on CADocument.embedding  — all ingested CA documents
+  rfi_embeddings           on RFI.embedding         — RFI question/response text
+  spec_section_embeddings  on SpecSection.embedding — CSI spec section summaries
+
+Key Node Types
+--------------
+  Project         {project_id, project_number, name, phase, drive_root_folder_id}
+  CADocument      {doc_id, drive_file_id, filename, doc_type, doc_number, phase,
+                   date_submitted, date_responded, summary, embedding, metadata_only}
+  Party           {party_id, name, type}
+  RFI             {rfi_id, rfi_number, question, response_text, embedding, ...}
+  SpecSection     {section_number, title, content_summary, embedding, ...}
+
+Key Relationships
+-----------------
+  (Project)-[:HAS_DOCUMENT]->(CADocument)
+  (CADocument)-[:SUBMITTED_BY]->(Party)
+  (Project)-[:HAS_RFI]->(RFI)
+  (RFI)-[:REFERENCES_SPEC]->(SpecSection)
+
+Singleton
+---------
+``kg_client = KnowledgeGraphClient()`` at module bottom — import this directly.
+"""
 import os
 import logging
+import time
 from typing import List, Dict, Any, Optional
 from neo4j import GraphDatabase
+from neo4j.exceptions import ServiceUnavailable, SessionExpired
 
 from ai_engine.engine import engine
 
 logger = logging.getLogger(__name__)
 
+_MAX_RETRIES = 3
+_RETRY_DELAY = 2  # seconds
+
+
 class KnowledgeGraphClient:
     def __init__(self):
-        uri = os.environ.get("NEO4J_URI")
-        user = os.environ.get("NEO4J_USERNAME")
-        password = os.environ.get("NEO4J_PASSWORD")
+        self._uri = os.environ.get("NEO4J_URI")
+        self._auth = (
+            os.environ.get("NEO4J_USERNAME", ""),
+            os.environ.get("NEO4J_PASSWORD", ""),
+        )
 
-        if not uri or not user or not password:
+        if not self._uri or not self._auth[0] or not self._auth[1]:
             logger.warning("Neo4j credentials not fully provided in environment variables.")
             self._driver = None
         else:
+            self._driver = self._make_driver()
+
+    def _make_driver(self):
+        """Create a fresh Neo4j driver instance."""
+        try:
+            return GraphDatabase.driver(
+                self._uri,
+                auth=self._auth,
+                connection_timeout=30,
+                max_connection_lifetime=300,  # rotate connections every 5 min
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize Neo4j driver: {e}")
+            return None
+
+    def _reconnect(self):
+        """Close the current driver and open a fresh one."""
+        try:
+            if self._driver:
+                self._driver.close()
+        except Exception:
+            pass
+        self._driver = self._make_driver()
+
+    def _session(self):
+        """Return a new session, reconnecting if the driver is dead."""
+        if not self._driver:
+            self._reconnect()
+        return self._driver.session()
+
+    def _run_with_retry(self, fn, *args, **kwargs):
+        """
+        Call fn() which uses self._driver.  Retry up to _MAX_RETRIES times on
+        ServiceUnavailable / SessionExpired / ConnectionAbortedError.
+        """
+        last_exc = None
+        for attempt in range(1, _MAX_RETRIES + 1):
             try:
-                self._driver = GraphDatabase.driver(
-                    uri,
-                    auth=(user, password),
-                    connection_timeout=5,
-                    max_connection_lifetime=3600,
+                return fn(*args, **kwargs)
+            except (ServiceUnavailable, SessionExpired, OSError, ConnectionAbortedError) as exc:
+                last_exc = exc
+                logger.warning(
+                    f"Neo4j connection error (attempt {attempt}/{_MAX_RETRIES}): {exc}. Reconnecting..."
                 )
-            except Exception as e:
-                logger.error(f"Failed to initialize Neo4j driver: {e}")
-                self._driver = None
+                time.sleep(_RETRY_DELAY * attempt)
+                self._reconnect()
+        raise last_exc
 
     def close(self):
         if self._driver:
@@ -884,13 +972,17 @@ class KnowledgeGraphClient:
         """Return True if a CADocument with this drive_file_id already exists in the graph."""
         if not self._driver:
             return False
-        with self._driver.session() as session:
-            result = session.run(
-                "MATCH (d:CADocument {drive_file_id: $drive_file_id}) RETURN count(d) AS cnt",
-                drive_file_id=drive_file_id,
-            )
-            record = result.single()
-            return (record["cnt"] > 0) if record else False
+
+        def _do():
+            with self._session() as session:
+                result = session.run(
+                    "MATCH (d:CADocument {drive_file_id: $drive_file_id}) RETURN count(d) AS cnt",
+                    drive_file_id=drive_file_id,
+                )
+                record = result.single()
+                return (record["cnt"] > 0) if record else False
+
+        return self._run_with_retry(_do)
 
     def upsert_document(self, doc_data: dict, project_id: str) -> None:
         """
@@ -903,66 +995,78 @@ class KnowledgeGraphClient:
         """
         if not self._driver:
             return
-        with self._driver.session() as session:
-            # Call 1: upsert the document node
-            session.run(
-                """
-                MERGE (d:CADocument {drive_file_id: $drive_file_id})
-                SET d.doc_id             = $doc_id,
-                    d.filename           = $filename,
-                    d.drive_folder_path  = $drive_folder_path,
-                    d.doc_type           = $doc_type,
-                    d.doc_number         = $doc_number,
-                    d.phase              = $phase,
-                    d.date_submitted     = $date_submitted,
-                    d.date_responded     = $date_responded,
-                    d.summary            = $summary,
-                    d.embedding          = $embedding,
-                    d.embedding_model    = $embedding_model,
-                    d.embedding_updated_at = datetime(),
-                    d.metadata_only      = $metadata_only
-                """,
-                **doc_data,
-            )
-            # Call 2: link to project
-            session.run(
-                """
-                MATCH (d:CADocument {drive_file_id: $drive_file_id})
-                MATCH (p:Project {project_id: $project_id})
-                MERGE (p)-[:HAS_DOCUMENT]->(d)
-                """,
-                drive_file_id=doc_data["drive_file_id"],
-                project_id=project_id,
-            )
+
+        def _do():
+            with self._session() as session:
+                # Call 1: upsert the document node
+                session.run(
+                    """
+                    MERGE (d:CADocument {drive_file_id: $drive_file_id})
+                    SET d.doc_id             = $doc_id,
+                        d.filename           = $filename,
+                        d.drive_folder_path  = $drive_folder_path,
+                        d.doc_type           = $doc_type,
+                        d.doc_number         = $doc_number,
+                        d.phase              = $phase,
+                        d.date_submitted     = $date_submitted,
+                        d.date_responded     = $date_responded,
+                        d.summary            = $summary,
+                        d.embedding          = $embedding,
+                        d.embedding_model    = $embedding_model,
+                        d.embedding_updated_at = datetime(),
+                        d.metadata_only      = $metadata_only
+                    """,
+                    **doc_data,
+                )
+                # Call 2: link to project
+                session.run(
+                    """
+                    MATCH (d:CADocument {drive_file_id: $drive_file_id})
+                    MATCH (p:Project {project_id: $project_id})
+                    MERGE (p)-[:HAS_DOCUMENT]->(d)
+                    """,
+                    drive_file_id=doc_data["drive_file_id"],
+                    project_id=project_id,
+                )
+
+        self._run_with_retry(_do)
 
     def upsert_party(self, party_data: dict) -> None:
         """MERGE a Party node. Keys: party_id, name, type."""
         if not self._driver:
             return
-        with self._driver.session() as session:
-            session.run(
-                """
-                MERGE (party:Party {party_id: $party_id})
-                SET party.name = $name,
-                    party.type = $type
-                """,
-                **party_data,
-            )
+
+        def _do():
+            with self._session() as session:
+                session.run(
+                    """
+                    MERGE (party:Party {party_id: $party_id})
+                    SET party.name = $name,
+                        party.type = $type
+                    """,
+                    **party_data,
+                )
+
+        self._run_with_retry(_do)
 
     def link_document_to_party(self, drive_file_id: str, party_id: str) -> None:
         """Create (:CADocument)-[:SUBMITTED_BY]->(:Party) relationship."""
         if not self._driver:
             return
-        with self._driver.session() as session:
-            session.run(
-                """
-                MATCH (d:CADocument {drive_file_id: $drive_file_id})
-                MATCH (party:Party {party_id: $party_id})
-                MERGE (d)-[:SUBMITTED_BY]->(party)
-                """,
-                drive_file_id=drive_file_id,
-                party_id=party_id,
-            )
+
+        def _do():
+            with self._session() as session:
+                session.run(
+                    """
+                    MATCH (d:CADocument {drive_file_id: $drive_file_id})
+                    MATCH (party:Party {party_id: $party_id})
+                    MERGE (d)-[:SUBMITTED_BY]->(party)
+                    """,
+                    drive_file_id=drive_file_id,
+                    party_id=party_id,
+                )
+
+        self._run_with_retry(_do)
 
     def get_project_documents(
         self, project_id: str, doc_type: Optional[str] = None
@@ -1047,6 +1151,323 @@ class KnowledgeGraphClient:
                     threshold=threshold,
                 )
             return [record.data() for record in result]
+
+
+    # -----------------------------------------------------------------------
+    # Project Intelligence Dashboard methods
+    # -----------------------------------------------------------------------
+
+    def get_project_intelligence(self, project_id: str) -> Dict[str, Any]:
+        """
+        Aggregate KPIs for a single project: doc counts by type, response rate,
+        metadata_only ratio, party count, and date range.
+        """
+        if not self._driver:
+            return {}
+
+        def _do():
+            with self._session() as session:
+                row = session.run(
+                    """
+                    MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(d:CADocument)
+                    WITH
+                      count(d) AS total_docs,
+                      count(d.date_responded) AS responded_docs,
+                      sum(CASE WHEN d.metadata_only = true THEN 1 ELSE 0 END) AS metadata_only_count,
+                      min(d.date_submitted) AS earliest_date,
+                      max(d.date_submitted) AS latest_date
+                    RETURN total_docs, responded_docs, metadata_only_count,
+                           earliest_date, latest_date
+                    """,
+                    project_id=project_id,
+                ).single()
+                if not row:
+                    return {}
+
+                type_counts = {
+                    r["doc_type"]: r["cnt"]
+                    for r in session.run(
+                        """
+                        MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(d:CADocument)
+                        RETURN d.doc_type AS doc_type, count(d) AS cnt
+                        ORDER BY cnt DESC
+                        """,
+                        project_id=project_id,
+                    )
+                }
+
+                party_count = session.run(
+                    """
+                    MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(d:CADocument)
+                          -[:SUBMITTED_BY]->(party:Party)
+                    RETURN count(DISTINCT party) AS cnt
+                    """,
+                    project_id=project_id,
+                ).single()["cnt"] or 0
+
+                total = row["total_docs"] or 0
+                responded = row["responded_docs"] or 0
+                meta = row["metadata_only_count"] or 0
+                return {
+                    "project_id": project_id,
+                    "total_docs": total,
+                    "responded_docs": responded,
+                    "response_rate": round(responded / total, 3) if total > 0 else 0.0,
+                    "metadata_only_count": meta,
+                    "metadata_only_ratio": round(meta / total, 3) if total > 0 else 0.0,
+                    "party_count": party_count,
+                    "earliest_date": row["earliest_date"],
+                    "latest_date": row["latest_date"],
+                    "doc_counts_by_type": type_counts,
+                }
+
+        return self._run_with_retry(_do)
+
+    def get_party_network(self, project_id: str) -> Dict[str, Any]:
+        """
+        Return Party nodes + per-party submission counts by doc_type,
+        ordered by total submissions descending.
+        """
+        if not self._driver:
+            return {"parties": []}
+
+        def _do():
+            with self._session() as session:
+                result = session.run(
+                    """
+                    MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(d:CADocument)
+                          -[:SUBMITTED_BY]->(party:Party)
+                    WITH party, d.doc_type AS doc_type, count(d) AS cnt
+                    WITH party,
+                         collect({doc_type: doc_type, count: cnt}) AS submissions,
+                         sum(cnt) AS total_submissions
+                    RETURN party.party_id AS party_id,
+                           party.name     AS name,
+                           party.type     AS type,
+                           submissions,
+                           total_submissions
+                    ORDER BY total_submissions DESC
+                    """,
+                    project_id=project_id,
+                )
+                return {"parties": [r.data() for r in result]}
+
+        return self._run_with_retry(_do)
+
+    def get_document_timeline(self, project_id: str) -> Dict[str, Any]:
+        """
+        Return document submission counts grouped by YYYY-MM month for a
+        timeline chart.
+        """
+        if not self._driver:
+            return {"months": []}
+
+        def _do():
+            with self._session() as session:
+                result = session.run(
+                    """
+                    MATCH (p:Project {project_id: $project_id})-[:HAS_DOCUMENT]->(d:CADocument)
+                    WHERE d.date_submitted IS NOT NULL AND d.date_submitted <> ''
+                    WITH substring(d.date_submitted, 0, 7) AS month,
+                         d.doc_type AS doc_type,
+                         count(d) AS cnt
+                    ORDER BY month ASC, cnt DESC
+                    RETURN month, doc_type, cnt
+                    """,
+                    project_id=project_id,
+                )
+                from collections import defaultdict
+                months: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+                for r in result:
+                    months[r["month"]][r["doc_type"]] += r["cnt"]
+                return {
+                    "months": [
+                        {"month": m, "counts": dict(counts)}
+                        for m, counts in sorted(months.items())
+                    ]
+                }
+
+        return self._run_with_retry(_do)
+
+    def get_cross_project_summary(self) -> Dict[str, Any]:
+        """
+        Return aggregate intelligence for all projects side-by-side.
+        """
+        if not self._driver:
+            return {"projects": []}
+
+        def _do():
+            with self._session() as session:
+                result = session.run(
+                    """
+                    MATCH (p:Project)-[:HAS_DOCUMENT]->(d:CADocument)
+                    WITH p,
+                         count(d) AS total_docs,
+                         count(d.date_responded) AS responded_docs,
+                         sum(CASE WHEN d.metadata_only = true THEN 1 ELSE 0 END) AS metadata_only_count
+                    OPTIONAL MATCH (p)-[:HAS_DOCUMENT]->(d2:CADocument)-[:SUBMITTED_BY]->(party:Party)
+                    WITH p, total_docs, responded_docs, metadata_only_count,
+                         count(DISTINCT party) AS party_count
+                    RETURN p.project_id   AS project_id,
+                           p.name         AS name,
+                           p.project_number AS project_number,
+                           total_docs,
+                           responded_docs,
+                           metadata_only_count,
+                           party_count
+                    ORDER BY total_docs DESC
+                    """
+                )
+                projects = []
+                for r in result:
+                    data = r.data()
+                    total = data.get("total_docs") or 0
+                    responded = data.get("responded_docs") or 0
+                    data["response_rate"] = round(responded / total, 3) if total > 0 else 0.0
+                    projects.append(data)
+                return {"projects": projects}
+
+        return self._run_with_retry(_do)
+
+
+    # -----------------------------------------------------------------------
+    # Pre-Bid Lessons Learned methods
+    # -----------------------------------------------------------------------
+
+    def get_prebid_lessons(
+        self,
+        query_text: str,
+        source_project_ids: List[str],
+        doc_types: Optional[List[str]] = None,
+        top_k: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """
+        Semantic similarity search across historical CADocuments (RFIs, Change Orders, etc.)
+        from the specified source projects.  Returns the most relevant documents that could
+        flag design issues before bid.
+
+        Args:
+            query_text:         Free-text description of a design concern or topic.
+            source_project_ids: Project IDs of completed projects to mine for lessons.
+            doc_types:          Restrict to specific doc types (e.g. ['RFI', 'CO']).
+                                If None, defaults to common CA problem-indicator types.
+            top_k:              Max candidates to retrieve from the vector index.
+        """
+        if not self._driver:
+            return []
+
+        if doc_types is None:
+            doc_types = ["RFI", "CO", "CHANGE_ORDER", "Change Order", "COR", "POTENTIAL_CO"]
+
+        try:
+            query_vector = engine.generate_embedding(query_text)
+        except Exception as e:
+            logger.error(f"Embedding generation failed for prebid search: {e}")
+            return []
+
+        threshold = float(os.environ.get("KG_EMBEDDING_SIMILARITY_THRESHOLD", "0.65"))
+
+        cypher = """
+        CALL db.index.vector.queryNodes('ca_document_embeddings', $fetch_k, $query_vector)
+        YIELD node AS d, score
+        WHERE score > $threshold
+          AND d.doc_type IN $doc_types
+        MATCH (p:Project)-[:HAS_DOCUMENT]->(d)
+        WHERE p.project_id IN $source_project_ids
+        RETURN d.doc_id       AS doc_id,
+               d.filename     AS filename,
+               d.doc_type     AS doc_type,
+               d.doc_number   AS doc_number,
+               d.summary      AS summary,
+               d.date_submitted AS date_submitted,
+               p.project_id  AS project_id,
+               p.name        AS project_name,
+               p.project_number AS project_number,
+               score
+        ORDER BY score DESC
+        LIMIT $top_k
+        """
+
+        with self._driver.session() as session:
+            result = session.run(
+                cypher,
+                fetch_k=top_k * 4,   # over-fetch so post-filters still return enough
+                query_vector=query_vector,
+                threshold=threshold,
+                doc_types=doc_types,
+                source_project_ids=source_project_ids,
+                top_k=top_k,
+            )
+            return [r.data() for r in result]
+
+    def get_hotspot_topics(
+        self,
+        source_project_ids: List[str],
+        top_n: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        Return the most frequently occurring RFI / Change Order topics from the
+        specified historical projects, grouped by doc_type and by inferred spec
+        references (if available).
+
+        Returns a dict with:
+          - doc_type_counts:  {doc_type: count}
+          - top_docs:         [{doc_id, filename, doc_type, project_name, summary, date_submitted}]
+                               ordered by response frequency (docs with date_responded first, newest first)
+        """
+        if not self._driver:
+            return {"doc_type_counts": {}, "top_docs": []}
+
+        def _do():
+            with self._session() as session:
+                # Per-doc-type counts across source projects
+                counts_result = session.run(
+                    """
+                    MATCH (p:Project)-[:HAS_DOCUMENT]->(d:CADocument)
+                    WHERE p.project_id IN $source_project_ids
+                      AND d.doc_type IN ['RFI', 'CO', 'CHANGE_ORDER', 'Change Order',
+                                         'COR', 'POTENTIAL_CO']
+                    RETURN d.doc_type AS doc_type, count(d) AS cnt
+                    ORDER BY cnt DESC
+                    """,
+                    source_project_ids=source_project_ids,
+                )
+                doc_type_counts = {r["doc_type"]: r["cnt"] for r in counts_result}
+
+                # Top representative docs: those that received a response (real issues)
+                top_result = session.run(
+                    """
+                    MATCH (p:Project)-[:HAS_DOCUMENT]->(d:CADocument)
+                    WHERE p.project_id IN $source_project_ids
+                      AND d.doc_type IN ['RFI', 'CO', 'CHANGE_ORDER', 'Change Order',
+                                         'COR', 'POTENTIAL_CO']
+                      AND d.summary IS NOT NULL
+                      AND d.summary <> ''
+                    RETURN d.doc_id       AS doc_id,
+                           d.filename    AS filename,
+                           d.doc_type    AS doc_type,
+                           d.doc_number  AS doc_number,
+                           d.summary     AS summary,
+                           d.date_submitted AS date_submitted,
+                           d.date_responded AS date_responded,
+                           p.name        AS project_name,
+                           p.project_number AS project_number
+                    ORDER BY
+                      CASE WHEN d.date_responded IS NOT NULL
+                               AND d.date_responded <> '' THEN 0 ELSE 1 END,
+                      d.date_submitted DESC
+                    LIMIT $top_n
+                    """,
+                    source_project_ids=source_project_ids,
+                    top_n=top_n,
+                )
+
+                return {
+                    "doc_type_counts": doc_type_counts,
+                    "top_docs": [r.data() for r in top_result],
+                }
+
+        return self._run_with_retry(_do)
 
 
 kg_client = KnowledgeGraphClient()

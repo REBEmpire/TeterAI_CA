@@ -22,6 +22,9 @@ class LocalConfig:
     google_api_key: str = ""
     xai_api_key: str = ""
 
+    # GCP service account key file (Drive, Vertex AI, Secret Manager)
+    google_application_credentials: str = ""
+
     # Knowledge Graph (optional)
     neo4j_uri: str = ""
     neo4j_username: str = ""
@@ -77,6 +80,7 @@ class LocalConfig:
             "anthropic_api_key": "ANTHROPIC_API_KEY",
             "google_api_key": "GOOGLE_API_KEY",
             "xai_api_key": "XAI_API_KEY",
+            "google_application_credentials": "GOOGLE_APPLICATION_CREDENTIALS",
             "neo4j_uri": "NEO4J_URI",
             "neo4j_username": "NEO4J_USERNAME",
             "neo4j_password": "NEO4J_PASSWORD",

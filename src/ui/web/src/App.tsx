@@ -6,11 +6,13 @@ import { useAuth } from './hooks/useAuth'
 import { AdminPanel } from './views/AdminPanel'
 import { Dashboard } from './views/Dashboard'
 import { KnowledgeGraphView } from './views/KnowledgeGraphView'
+import { ProjectIntelligenceView } from './views/ProjectIntelligenceView'
 import { LoginPage } from './views/LoginPage'
 import { SettingsPage } from './views/SettingsPage'
 import { SplitViewer } from './views/SplitViewer'
 import { SubmittalReviewViewer } from './views/SubmittalReviewViewer'
 import { UploadView } from './views/UploadView'
+import { PreBidReviewView } from './views/PreBidReviewView'
 
 const DESKTOP_MODE = import.meta.env.VITE_DESKTOP_MODE === 'true'
 
@@ -45,6 +47,8 @@ function AppRoutes() {
         <Route path="/tasks/:taskId/submittal" element={<SubmittalReviewViewer />} />
         <Route path="/upload" element={<UploadView />} />
         <Route path="/knowledge-graph" element={<KnowledgeGraphView />} />
+        <Route path="/project-intelligence" element={<ProjectIntelligenceView />} />
+        <Route path="/prebid-review" element={<PreBidReviewView />} />
         {DESKTOP_MODE && (
           <Route path="/settings" element={<SettingsPage />} />
         )}

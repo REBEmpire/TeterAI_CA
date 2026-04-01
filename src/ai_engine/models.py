@@ -12,6 +12,7 @@ class CapabilityClass(str, Enum):
     MULTIMODAL = "MULTIMODAL"
     SUBMITTAL_REVIEW = "SUBMITTAL_REVIEW"
     RED_TEAM_CRITIQUE = "RED_TEAM_CRITIQUE"
+    ANALYZE = "ANALYZE"
 
 class Attachment(BaseModel):
     file_type: str
@@ -55,7 +56,9 @@ class CapabilityConfig(BaseModel):
 class ModelRegistry(BaseModel):
     version: str
     updated_at: str
-    capability_classes: Dict[CapabilityClass, CapabilityConfig]
+    # Use str keys so adding new CapabilityClass values to Firestore doesn't
+    # break running processes that were started with an older enum definition.
+    capability_classes: Dict[str, CapabilityConfig]
 
 class InvalidCapabilityClassError(Exception):
     pass

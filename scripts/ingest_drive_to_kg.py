@@ -14,6 +14,10 @@ _root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.insert(0, os.path.join(_root, 'src'))
 sys.path.insert(0, _root)  # needed for service.py's `from src.ai_engine.gcp import ...`
 
+# Load credentials from ~/.teterai/config.env before any service imports
+from config.local_config import LocalConfig
+LocalConfig.ensure_exists().push_to_env()
+
 from ai_engine.gcp import gcp_integration
 from integrations.drive.service import DriveService, CANONICAL_FOLDERS, DRIVE_ROOT_FOLDER_ID
 from knowledge_graph.client import KnowledgeGraphClient

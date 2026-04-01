@@ -1,6 +1,45 @@
+"""
+AI Engine — the single gateway for all LLM calls in TeterAI_CA.
+
+Architecture
+------------
+Every AI call goes through ``AIEngine.generate_response(AIRequest)``.  The engine
+looks up the requested ``CapabilityClass`` in the model registry (Firestore-backed,
+falls back to ``default_registry.json``), then iterates through up to three tiers:
+
+  Tier 1 → Tier 2 → Tier 3
+
+Before falling through to the next tier the engine retries the current tier up to
+``_TIER_MAX_RETRIES`` times (default 2) with exponential back-off + jitter.  This
+keeps expensive fallback models as a true last resort rather than being triggered by
+transient 503s or rate-limit spikes.
+
+Rate Limiting
+-------------
+An optional token-bucket rate limiter (``_TokenBucket``) controls total RPM across
+all calls in a process.  Set ``AI_ENGINE_RATE_LIMIT_RPM`` env var to enable it.
+Default 0 = disabled (recommended when already managed by per-model quotas).
+
+Key Classes / Functions
+-----------------------
+- ``AIEngine``                   – main engine class (singleton ``engine`` at module bottom)
+- ``generate_response()``        – primary entry point for text generation
+- ``generate_embedding()``       – Vertex AI text-embedding-004 (768-dim)
+- ``generate_all_models()``      – parallel multi-model calls (used by SubmittalReviewAgent)
+- ``_is_retryable(exc)``         – True for 429/500/502/503/504, ServiceUnavailable, etc.
+- ``_TokenBucket``               – thread-safe token bucket rate limiter
+
+Environment Variables
+---------------------
+AI_ENGINE_RATE_LIMIT_RPM        Max AI calls per minute (0 = disabled, default 0)
+AI_ENGINE_TIER_MAX_RETRIES      Per-tier retry attempts before fallthrough (default 2)
+AI_ENGINE_TIER_RETRY_BASE_DELAY Base delay seconds for retry back-off (default 1.5)
+"""
 import os
 import time
+import random
 import logging
+import threading
 import litellm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
@@ -17,6 +56,65 @@ from .models import (
 from .gcp import gcp_integration
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Retry config — applied per-tier before falling through to the next tier
+# ---------------------------------------------------------------------------
+_TIER_MAX_RETRIES = int(os.environ.get("AI_ENGINE_TIER_MAX_RETRIES", "2"))
+_TIER_RETRY_BASE_DELAY = float(os.environ.get("AI_ENGINE_TIER_RETRY_BASE_DELAY", "1.5"))  # seconds
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+
+# ---------------------------------------------------------------------------
+# Token-bucket rate limiter (shared across all engine calls in a process)
+# ---------------------------------------------------------------------------
+_RATE_LIMIT_RPM = int(os.environ.get("AI_ENGINE_RATE_LIMIT_RPM", "0"))  # 0 = disabled
+
+
+class _TokenBucket:
+    """Thread-safe token bucket rate limiter."""
+
+    def __init__(self, rpm: int):
+        self._rpm = rpm
+        self._tokens = float(rpm)
+        self._last_refill = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self):
+        """Block until a token is available."""
+        if self._rpm <= 0:
+            return
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                elapsed = now - self._last_refill
+                self._tokens = min(
+                    self._rpm,
+                    self._tokens + elapsed * (self._rpm / 60.0),
+                )
+                self._last_refill = now
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return
+            time.sleep(0.1)
+
+
+_rate_limiter = _TokenBucket(_RATE_LIMIT_RPM)
+
+
+def _is_retryable(exc: Exception) -> bool:
+    """Return True if this exception should trigger a same-tier retry."""
+    msg = str(exc).lower()
+    if any(str(code) in msg for code in _RETRYABLE_STATUS_CODES):
+        return True
+    # litellm wraps these as ServiceUnavailableError / RateLimitError
+    retryable_types = (
+        "serviceunavailableerror",
+        "ratelimiterror",
+        "timeout",
+        "overloaded",
+    )
+    return any(t in type(exc).__name__.lower() or t in msg for t in retryable_types)
+
 
 class AIEngine:
     def __init__(self):
@@ -62,41 +160,55 @@ class AIEngine:
         last_error = None
 
         for tier_num, tier_config in tiers:
-            try:
-                if tier_num > 1:
-                    fallback_triggered = True
-                    logger.warning(f"Fallback triggered: attempting Tier {tier_num} ({tier_config.provider}/{tier_config.model})")
+            model_label = f"Tier {tier_num} ({tier_config.provider}/{tier_config.model})"
+            if tier_num > 1:
+                fallback_triggered = True
+                logger.warning(f"Fallback triggered: attempting {model_label}")
 
-                response = self._call_model(request, tier_config)
-
-                response.metadata.tier_used = tier_num
-                response.metadata.fallback_triggered = fallback_triggered
-
+            # Per-tier retry loop with exponential backoff + jitter
+            for attempt in range(1, _TIER_MAX_RETRIES + 2):  # +2: attempts 1..N+1
                 try:
-                    from audit.logger import audit_logger
-                    from audit.models import AICallLog
-                    audit_logger.log(AICallLog(
-                        ai_call_id=response.metadata.ai_call_id,
-                        task_id=request.task_id,
-                        calling_agent=request.calling_agent,
-                        capability_class=request.capability_class.value,
-                        tier_used=response.metadata.tier_used,
-                        provider=response.metadata.provider,
-                        model=response.metadata.model,
-                        fallback_triggered=response.metadata.fallback_triggered,
-                        input_tokens=response.metadata.input_tokens,
-                        output_tokens=response.metadata.output_tokens,
-                        latency_ms=response.metadata.latency_ms,
-                        status="SUCCESS",
-                    ))
-                except Exception:
-                    pass  # audit failure must never interrupt AI calls
+                    _rate_limiter.acquire()
+                    response = self._call_model(request, tier_config)
 
-                return response
+                    response.metadata.tier_used = tier_num
+                    response.metadata.fallback_triggered = fallback_triggered
 
-            except Exception as e:
-                logger.error(f"Tier {tier_num} ({tier_config.provider}/{tier_config.model}) failed: {e}")
-                last_error = e
+                    try:
+                        from audit.logger import audit_logger
+                        from audit.models import AICallLog
+                        audit_logger.log(AICallLog(
+                            ai_call_id=response.metadata.ai_call_id,
+                            task_id=request.task_id,
+                            calling_agent=request.calling_agent,
+                            capability_class=request.capability_class.value,
+                            tier_used=response.metadata.tier_used,
+                            provider=response.metadata.provider,
+                            model=response.metadata.model,
+                            fallback_triggered=response.metadata.fallback_triggered,
+                            input_tokens=response.metadata.input_tokens,
+                            output_tokens=response.metadata.output_tokens,
+                            latency_ms=response.metadata.latency_ms,
+                            status="SUCCESS",
+                        ))
+                    except Exception:
+                        pass  # audit failure must never interrupt AI calls
+
+                    return response
+
+                except Exception as e:
+                    last_error = e
+                    is_last_attempt = attempt > _TIER_MAX_RETRIES
+                    if _is_retryable(e) and not is_last_attempt:
+                        delay = _TIER_RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                        logger.warning(
+                            f"{model_label} attempt {attempt} failed (retryable): {type(e).__name__}. "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        time.sleep(delay)
+                    else:
+                        logger.error(f"{model_label} failed: {e}")
+                        break  # move to next tier
 
         logger.critical(f"All AI Engine tiers exhausted for task {request.task_id}.")
         raise AIEngineExhaustedError(f"All tiers exhausted. Last error: {last_error}")

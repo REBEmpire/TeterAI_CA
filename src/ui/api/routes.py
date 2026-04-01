@@ -1322,6 +1322,331 @@ def get_rfi_pattern_graph(
 
 
 # ---------------------------------------------------------------------------
+# Project Intelligence Dashboard
+# ---------------------------------------------------------------------------
+
+@router.get("/projects/compare", tags=["knowledge-graph"])
+def compare_projects(
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Cross-project KPI comparison for all ingested projects."""
+    try:
+        from knowledge_graph.client import kg_client
+        return kg_client.get_cross_project_summary()
+    except Exception as e:
+        logger.error(f"compare_projects failed: {e}")
+        return {"projects": []}
+
+
+@router.get("/projects/{project_id}/intelligence", tags=["knowledge-graph"])
+def get_project_intelligence(
+    project_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Aggregate KPIs for a project: doc counts, response rate, party count, dates."""
+    try:
+        from knowledge_graph.client import kg_client
+        result = kg_client.get_project_intelligence(project_id)
+        if not result:
+            raise HTTPException(status_code=404, detail=f"No KG data for project '{project_id}'.")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"get_project_intelligence failed: {e}")
+        raise HTTPException(status_code=500, detail="Knowledge graph unavailable.")
+
+
+@router.get("/projects/{project_id}/party-network", tags=["knowledge-graph"])
+def get_party_network(
+    project_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Party nodes + submission counts by doc_type for project."""
+    try:
+        from knowledge_graph.client import kg_client
+        return kg_client.get_party_network(project_id)
+    except Exception as e:
+        logger.error(f"get_party_network failed: {e}")
+        return {"parties": []}
+
+
+@router.get("/projects/{project_id}/timeline", tags=["knowledge-graph"])
+def get_document_timeline(
+    project_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Document submission counts grouped by month for timeline chart."""
+    try:
+        from knowledge_graph.client import kg_client
+        return kg_client.get_document_timeline(project_id)
+    except Exception as e:
+        logger.error(f"get_document_timeline failed: {e}")
+        return {"months": []}
+
+
+@router.post("/projects/{project_id}/ai-summary", tags=["knowledge-graph"])
+def generate_ai_summary(
+    project_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Generate a Project Health Narrative using AI from KG data.
+    Returns JSON with keys: overview, document_status, key_parties,
+    risk_flags, recommendations.
+    """
+    import json as _json
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    # Pull KG data
+    try:
+        from knowledge_graph.client import kg_client
+        intel = kg_client.get_project_intelligence(project_id)
+        if not intel:
+            raise HTTPException(status_code=404, detail=f"No KG data for project '{project_id}'.")
+        parties = kg_client.get_party_network(project_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"ai-summary KG fetch failed: {e}")
+        raise HTTPException(status_code=500, detail="Knowledge graph unavailable.")
+
+    # Build structured context for the AI
+    top_parties = [p["name"] for p in parties.get("parties", [])[:5]]
+    doc_breakdown = ", ".join(
+        f"{k}: {v}" for k, v in (intel.get("doc_counts_by_type") or {}).items()
+    )
+    context_block = (
+        f"Project ID: {project_id}\n"
+        f"Total documents ingested: {intel.get('total_docs', 0)}\n"
+        f"Documents by type: {doc_breakdown or 'none'}\n"
+        f"Response rate: {round((intel.get('response_rate') or 0) * 100, 1)}%\n"
+        f"Metadata-only ratio (docs without extractable text): "
+        f"{round((intel.get('metadata_only_ratio') or 0) * 100, 1)}%\n"
+        f"Distinct parties involved: {intel.get('party_count', 0)}\n"
+        f"Top submitting parties: {', '.join(top_parties) if top_parties else 'none identified'}\n"
+        f"Date range: {intel.get('earliest_date') or 'unknown'} to "
+        f"{intel.get('latest_date') or 'unknown'}\n"
+    )
+
+    system_prompt = (
+        "You are a senior construction administration specialist at Teter Architects. "
+        "You analyze project documentation data and write concise, professional health narratives. "
+        "Respond ONLY with a valid JSON object with exactly these five string keys: "
+        "overview, document_status, key_parties, risk_flags, recommendations. "
+        "Each value must be a single paragraph of 2-4 sentences. "
+        "No markdown fences, no extra keys, no explanatory text outside the JSON object."
+    )
+    user_prompt = (
+        "Generate a Project Health Narrative from this construction administration data:\n\n"
+        f"{context_block}\n"
+        "Risk flag guidance: metadata_only_ratio > 50% means many documents could not be "
+        "text-extracted (likely scanned PDFs or drawings — flag for manual review). "
+        "response_rate < 70% means many documents lack recorded responses — flag as a tracking gap."
+    )
+
+    from ai_engine.engine import engine
+    from ai_engine.models import AIRequest, CapabilityClass
+
+    ai_req = AIRequest(
+        capability_class=CapabilityClass.ANALYZE,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        calling_agent="project_intelligence_dashboard",
+        task_id=str(_uuid.uuid4()),
+        temperature=0.3,
+    )
+
+    try:
+        ai_resp = engine.generate_response(ai_req)
+        raw = ai_resp.content.strip()
+        # Strip markdown code fences if present
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        narrative = _json.loads(raw)
+    except _json.JSONDecodeError:
+        narrative = {
+            "overview": ai_resp.content[:600],
+            "document_status": "Structured response could not be parsed.",
+            "key_parties": "",
+            "risk_flags": "",
+            "recommendations": "",
+        }
+    except Exception as e:
+        logger.error(f"AI summary generation failed: {e}")
+        raise HTTPException(status_code=500, detail="AI summary generation failed.")
+
+    return {
+        "project_id": project_id,
+        "narrative": narrative,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "model_used": ai_resp.metadata.model,
+        "tier_used": ai_resp.metadata.tier_used,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pre-Bid Lessons Learned
+# ---------------------------------------------------------------------------
+
+class PreBidLessonsRequest(BaseModel):
+    """
+    Request body for POST /prebid-lessons.
+
+    Attributes:
+        query_text:          Plain-English description of a design concern or topic.
+                             This text is embedded and compared against historical
+                             RFI / Change Order summaries via cosine similarity.
+        source_project_ids:  IDs of completed projects to mine for lessons.
+                             Must match the project_id values stored in Neo4j
+                             (e.g. "11900", "12556").
+        doc_types:           Optional override of which document types to search.
+                             Defaults to ['RFI', 'CO', 'CHANGE_ORDER', 'Change Order',
+                             'COR', 'POTENTIAL_CO'] when omitted.
+    """
+    query_text: str
+    source_project_ids: list[str]
+    doc_types: list[str] | None = None   # defaults to RFI / CO types in KG method
+
+
+@router.post("/prebid-lessons", tags=["knowledge-graph"])
+def get_prebid_lessons(
+    body: PreBidLessonsRequest,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Pre-Bid Lessons Learned review.
+
+    Mine historical completed-project RFIs and Change Orders for patterns
+    that match a design concern described in *query_text*.  An AI model
+    then synthesises the findings into an actionable pre-bid checklist so
+    the design team can address known problem areas before going to bid.
+
+    Request body:
+      query_text          – free-text description of a design topic / concern
+      source_project_ids  – list of completed-project IDs to mine
+      doc_types           – optional override (default: RFI / CO variants)
+    """
+    import json as _json
+    import uuid as _uuid
+    from datetime import datetime, timezone
+
+    if not body.query_text.strip():
+        raise HTTPException(status_code=422, detail="query_text must not be empty.")
+    if not body.source_project_ids:
+        raise HTTPException(status_code=422, detail="At least one source_project_id is required.")
+
+    try:
+        from knowledge_graph.client import kg_client
+
+        kwargs: dict = {"query_text": body.query_text, "source_project_ids": body.source_project_ids}
+        if body.doc_types:
+            kwargs["doc_types"] = body.doc_types
+
+        similar_docs = kg_client.get_prebid_lessons(**kwargs)
+        hotspots = kg_client.get_hotspot_topics(body.source_project_ids)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"prebid-lessons KG fetch failed: {e}")
+        raise HTTPException(status_code=500, detail="Knowledge graph unavailable.")
+
+    # -----------------------------------------------------------------------
+    # Build AI prompt
+    # -----------------------------------------------------------------------
+    def _fmt_docs(docs, limit=8):
+        lines = []
+        for i, d in enumerate(docs[:limit], 1):
+            proj = d.get("project_name") or d.get("project_id", "?")
+            num = d.get("doc_number") or ""
+            dt = d.get("doc_type", "")
+            summary = (d.get("summary") or "").strip()[:300]
+            score = d.get("score")
+            score_str = f" [similarity {score:.2f}]" if score else ""
+            lines.append(
+                f"{i}. [{proj}] {dt} {num}{score_str}: {summary}"
+            )
+        return "\n".join(lines) if lines else "None found."
+
+    doc_type_counts = hotspots.get("doc_type_counts", {})
+    counts_str = ", ".join(f"{k}: {v}" for k, v in doc_type_counts.items()) or "none"
+    similar_str = _fmt_docs(similar_docs)
+    top_docs_str = _fmt_docs(hotspots.get("top_docs", []))
+
+    system_prompt = (
+        "You are a senior construction administration specialist and licensed architect at Teter. "
+        "Your job is to review historical RFI and Change Order patterns from completed projects "
+        "and help the design team eliminate known problem areas from new designs before bid. "
+        "Be specific, practical, and reference the historical evidence. "
+        "Respond ONLY with a valid JSON object with exactly these four string keys: "
+        "summary, design_risks, spec_sections_to_clarify, bid_checklist. "
+        "Each value is a paragraph or bulleted list (use \\n for newlines within values). "
+        "No markdown fences, no extra keys, no text outside the JSON."
+    )
+
+    user_prompt = (
+        f"Design concern: {body.query_text}\n\n"
+        f"Historical RFI/CO volume from source projects: {counts_str}\n\n"
+        f"Most similar historical RFIs / Change Orders (by semantic match):\n{similar_str}\n\n"
+        f"Top historically responded RFIs/COs from source projects:\n{top_docs_str}\n\n"
+        "Based on this evidence:\n"
+        "1. Summarize the recurring design issues seen historically.\n"
+        "2. Identify specific design risks the team should address before bid.\n"
+        "3. List spec sections or drawing details that need clarification.\n"
+        "4. Provide a concrete pre-bid checklist (5-10 action items) to eliminate these issues."
+    )
+
+    from ai_engine.engine import engine
+    from ai_engine.models import AIRequest, CapabilityClass
+
+    ai_req = AIRequest(
+        capability_class=CapabilityClass.ANALYZE,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        calling_agent="prebid_lessons_learned",
+        task_id=str(_uuid.uuid4()),
+        temperature=0.25,
+    )
+
+    try:
+        ai_resp = engine.generate_response(ai_req)
+        raw = ai_resp.content.strip()
+        if raw.startswith("```"):
+            parts = raw.split("```")
+            raw = parts[1] if len(parts) > 1 else raw
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        checklist = _json.loads(raw)
+    except _json.JSONDecodeError:
+        checklist = {
+            "summary": ai_resp.content[:800],
+            "design_risks": "",
+            "spec_sections_to_clarify": "",
+            "bid_checklist": "",
+        }
+    except Exception as e:
+        logger.error(f"prebid-lessons AI generation failed: {e}")
+        raise HTTPException(status_code=500, detail="AI checklist generation failed.")
+
+    return {
+        "query_text": body.query_text,
+        "source_project_ids": body.source_project_ids,
+        "similar_docs": similar_docs,
+        "doc_type_counts": doc_type_counts,
+        "checklist": checklist,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "model_used": ai_resp.metadata.model,
+        "tier_used": ai_resp.metadata.tier_used,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 

@@ -41,6 +41,11 @@
       "tier_1": {"provider": "anthropic", "model": "claude-opus-4-6", "max_tokens": 4096},
       "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 4096},
       "tier_3": {"provider": "xai", "model": "xai/grok-3", "max_tokens": 4096}
+    },
+    "ANALYZE": {
+      "tier_1": {"provider": "anthropic", "model": "claude-sonnet-4-6", "max_tokens": 4096},
+      "tier_2": {"provider": "google", "model": "gemini/gemini-2.0-flash", "max_tokens": 4096},
+      "tier_3": {"provider": "xai", "model": "xai/grok-3-mini", "max_tokens": 4096}
     }
   }
 }
