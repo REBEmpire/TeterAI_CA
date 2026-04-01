@@ -41,8 +41,15 @@ kg = [
     "neo4j-graphrag[anthropic]>=1.0.0",
     "mcp>=1.0.0",
 ]
+# Document Intelligence — optional; for spec book / drawing set processing
+doc-intel = [
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "pdf2image>=1.16.0",
+]
 # Convenience group: all extras
 all = [
     "app[cloud]",
     "app[kg]",
+    "app[doc-intel]",
 ]

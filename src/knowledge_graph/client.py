@@ -984,6 +984,27 @@ class KnowledgeGraphClient:
 
         return self._run_with_retry(_do)
 
+    def document_is_metadata_only(self, drive_file_id: str) -> bool:
+        """Return True if the CADocument exists AND was stored as metadata_only=True.
+
+        Used by the ingester to decide whether to re-process a previously-failed
+        extraction (e.g. after fixing a text extraction bug).
+        """
+        if not self._driver:
+            return False
+
+        def _do():
+            with self._session() as session:
+                result = session.run(
+                    "MATCH (d:CADocument {drive_file_id: $drive_file_id}) "
+                    "RETURN d.metadata_only AS mo",
+                    drive_file_id=drive_file_id,
+                )
+                record = result.single()
+                return bool(record["mo"]) if record else False
+
+        return self._run_with_retry(_do)
+
     def upsert_document(self, doc_data: dict, project_id: str) -> None:
         """
         MERGE a CADocument node and link it to its Project.
@@ -1468,6 +1489,91 @@ class KnowledgeGraphClient:
                 }
 
         return self._run_with_retry(_do)
+
+    # ------------------------------------------------------------------
+    # Document Intelligence — SpecSection / DrawingSheet enrichment
+    # ------------------------------------------------------------------
+
+    def upsert_spec_section(self, section_data: dict, project_id: str) -> None:
+        if not self._driver:
+            return
+        def _do():
+            with self._session() as session:
+                session.run(
+                    """
+                    MERGE (s:SpecSection {section_number: $section_number, project_id: $project_id})
+                    SET s.title           = $title,
+                        s.source_doc_id   = $source_doc_id,
+                        s.page_range      = $page_range,
+                        s.content_summary = $content_summary,
+                        s.embedding       = $embedding,
+                        s.embedding_model = $embedding_model,
+                        s.chunk_id        = $chunk_id
+                    """,
+                    **section_data,
+                )
+                if section_data.get("source_doc_id"):
+                    session.run(
+                        """
+                        MATCH (d:CADocument {doc_id: $doc_id})
+                        MATCH (s:SpecSection {section_number: $section_number, project_id: $project_id})
+                        MERGE (d)-[:HAS_SECTION]->(s)
+                        """,
+                        doc_id=section_data["source_doc_id"],
+                        section_number=section_data["section_number"],
+                        project_id=project_id,
+                    )
+        self._run_with_retry(_do)
+
+    def upsert_drawing_sheet(self, sheet_data: dict, project_id: str) -> None:
+        if not self._driver:
+            return
+        def _do():
+            with self._session() as session:
+                session.run(
+                    """
+                    MERGE (ds:DrawingSheet {sheet_number: $sheet_number, project_id: $project_id})
+                    SET ds.title           = $title,
+                        ds.discipline      = $discipline,
+                        ds.source_doc_id   = $source_doc_id,
+                        ds.content_summary = $content_summary,
+                        ds.embedding       = $embedding,
+                        ds.embedding_model = $embedding_model,
+                        ds.chunk_id        = $chunk_id
+                    """,
+                    **sheet_data,
+                )
+                if sheet_data.get("source_doc_id"):
+                    session.run(
+                        """
+                        MATCH (d:CADocument {doc_id: $doc_id})
+                        MATCH (ds:DrawingSheet {sheet_number: $sheet_number, project_id: $project_id})
+                        MERGE (d)-[:HAS_SHEET]->(ds)
+                        """,
+                        doc_id=sheet_data["source_doc_id"],
+                        sheet_number=sheet_data["sheet_number"],
+                        project_id=project_id,
+                    )
+        self._run_with_retry(_do)
+
+    def create_cross_reference(self, from_label: str, from_key: str, from_value: str,
+                                rel_type: str, to_label: str, to_key: str,
+                                to_value: str, project_id: str) -> None:
+        if not self._driver:
+            return
+        def _do():
+            with self._session() as session:
+                session.run(
+                    f"""
+                    MATCH (a:{from_label} {{{from_key}: $from_val, project_id: $project_id}})
+                    MATCH (b:{to_label} {{{to_key}: $to_val, project_id: $project_id}})
+                    MERGE (a)-[:{rel_type}]->(b)
+                    """,
+                    from_val=from_value,
+                    to_val=to_value,
+                    project_id=project_id,
+                )
+        self._run_with_retry(_do)
 
 
 kg_client = KnowledgeGraphClient()

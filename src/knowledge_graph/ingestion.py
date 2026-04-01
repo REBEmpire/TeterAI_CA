@@ -125,13 +125,14 @@ def extract_text(content: bytes, mime_type: str) -> tuple[str, bool]:
 
             script = (
                 "import pypdf, io, sys\n"
+                "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n"
                 f"data = open({repr(tmp_path)}, 'rb').read()\n"
                 "r = pypdf.PdfReader(io.BytesIO(data))\n"
                 "print('\\n'.join(p.extract_text() or '' for p in r.pages))\n"
             )
             proc = subprocess.run(
                 [sys.executable, "-c", script],
-                capture_output=True, text=True, timeout=60,
+                capture_output=True, encoding="utf-8", errors="replace", timeout=60,
             )
             if proc.returncode != 0:
                 logger.warning(f"PDF subprocess failed (exit {proc.returncode}): {proc.stderr[:200]}")
@@ -154,15 +155,41 @@ def extract_text(content: bytes, mime_type: str) -> tuple[str, bool]:
     if mime_type in (
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.template",  # .dotx
     ):
+        # Run python-docx (lxml) in a subprocess — lxml can segfault on corrupt files.
+        tmp_path = None
         try:
-            from docx import Document as DocxDocument
-            doc = DocxDocument(io.BytesIO(content))
-            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
+                f.write(content)
+                tmp_path = f.name
+            script = (
+                "import io, sys; sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n"
+                "from docx import Document\n"
+                f"doc = Document({repr(tmp_path)})\n"
+                "print('\\n'.join(p.text for p in doc.paragraphs if p.text.strip()))\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+            )
+            if proc.returncode != 0:
+                logger.warning(f"DOCX subprocess failed (exit {proc.returncode}): {proc.stderr[:200]}")
+                return "", True
+            text = proc.stdout
             return text, len(text.strip()) == 0
+        except subprocess.TimeoutExpired:
+            logger.warning("DOCX extraction timed out (30s) — marking metadata_only")
+            return "", True
         except Exception as e:
             logger.warning(f"DOCX extraction failed: {e}")
             return "", True
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     # Unsupported type (DWG, images, spreadsheets, etc.)
     return "", True
@@ -193,10 +220,18 @@ class DriveToKGIngester:
     # Configurable via env var; default 4.  Set to 1 to disable concurrency.
     MAX_WORKERS = int(os.environ.get("INGEST_MAX_WORKERS", "4"))
 
+    # Limit concurrent Drive downloads to avoid OpenSSL thread-safety issues.
+    # When multiple large downloads fail with SSL errors simultaneously the
+    # underlying OpenSSL library can corrupt shared state and segfault the
+    # process.  Serialising downloads (semaphore=2) prevents this while still
+    # allowing AI extraction and Neo4j writes to happen in parallel.
+    MAX_CONCURRENT_DOWNLOADS = int(os.environ.get("INGEST_MAX_DOWNLOAD_WORKERS", "2"))
+
     def __init__(self):
         self._kg = KnowledgeGraphClient()
         self._drive = DriveService()
         self._stats_lock = threading.Lock()
+        self._download_sem = threading.Semaphore(self.MAX_CONCURRENT_DOWNLOADS)
 
     def ingest_project(
         self,
@@ -248,10 +283,12 @@ class DriveToKGIngester:
                 mime_type = file_meta.get("mimeType", "application/octet-stream")
 
                 if self._kg.document_exists(file_id):
-                    logger.debug(f"[{project_id}] Skipping existing: {filename}")
-                    with self._stats_lock:
-                        stats["skipped"] += 1
-                    continue
+                    if not self._kg.document_is_metadata_only(file_id):
+                        logger.debug(f"[{project_id}] Skipping existing: {filename}")
+                        with self._stats_lock:
+                            stats["skipped"] += 1
+                        continue
+                    logger.debug(f"[{project_id}] Re-processing metadata_only: {filename}")
 
                 work_items.append((file_id, filename, mime_type, folder_path))
 
@@ -312,31 +349,30 @@ class DriveToKGIngester:
             print(f"  [DRY RUN] {filename} -> {doc_type} ({folder_path})")
             return "written"
 
-        # --- Download ---
+        # --- Download (semaphore-limited to avoid concurrent SSL failures) ---
         try:
-            if mime_type == "application/vnd.google-apps.document":
-                # Google Docs: export as plain text
-                content = self._drive.service.files().export(
-                    fileId=file_id, mimeType="text/plain"
-                ).execute()
-                if isinstance(content, bytes):
-                    raw_bytes = content
+            with self._download_sem:
+                if mime_type == "application/vnd.google-apps.document":
+                    content = self._drive.service.files().export(
+                        fileId=file_id, mimeType="text/plain"
+                    ).execute()
+                    if isinstance(content, bytes):
+                        raw_bytes = content
+                        effective_mime = "text/plain"
+                    else:
+                        raw_bytes = content.encode("utf-8")
+                        effective_mime = "text/plain"
+                elif mime_type == "application/vnd.google-apps.spreadsheet":
+                    content = self._drive.service.files().export(
+                        fileId=file_id, mimeType="text/csv"
+                    ).execute()
+                    if isinstance(content, bytes):
+                        raw_bytes = content
+                    else:
+                        raw_bytes = content.encode("utf-8")
                     effective_mime = "text/plain"
                 else:
-                    raw_bytes = content.encode("utf-8")
-                    effective_mime = "text/plain"
-            elif mime_type == "application/vnd.google-apps.spreadsheet":
-                # Google Sheets: export as CSV
-                content = self._drive.service.files().export(
-                    fileId=file_id, mimeType="text/csv"
-                ).execute()
-                if isinstance(content, bytes):
-                    raw_bytes = content
-                else:
-                    raw_bytes = content.encode("utf-8")
-                effective_mime = "text/plain"
-            else:
-                raw_bytes, effective_mime = self._drive.download_file(file_id)
+                    raw_bytes, effective_mime = self._drive.download_file(file_id)
         except Exception as e:
             logger.error(f"[{project_id}] Drive download failed for {filename}: {e}")
             return "error"
