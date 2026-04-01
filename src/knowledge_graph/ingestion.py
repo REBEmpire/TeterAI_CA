@@ -247,6 +247,11 @@ class DriveToKGIngester:
         doc_type = infer_doc_type(folder_path)
         phase    = infer_phase(folder_path)
 
+        # --- Dry-run: just report what would be processed ---
+        if dry_run:
+            print(f"  [DRY RUN] {filename} -> {doc_type} ({folder_path})")
+            return "written"
+
         # --- Download ---
         try:
             if mime_type == "application/vnd.google-apps.document":
@@ -325,10 +330,6 @@ class DriveToKGIngester:
             "embedding_model":   embedding_model,
             "metadata_only":     metadata_only,
         }
-
-        if dry_run:
-            print(f"  [DRY RUN] {filename} → {doc_type} | metadata_only={metadata_only}")
-            return "metadata_only" if metadata_only else "written"
 
         # --- Write to Neo4j ---
         try:

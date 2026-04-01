@@ -10,10 +10,12 @@ import sys
 import os
 import argparse
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.join(_root, 'src'))
+sys.path.insert(0, _root)  # needed for service.py's `from src.ai_engine.gcp import ...`
 
 from ai_engine.gcp import gcp_integration
-from integrations.drive.service import DriveService, CANONICAL_FOLDERS
+from integrations.drive.service import DriveService, CANONICAL_FOLDERS, DRIVE_ROOT_FOLDER_ID
 from knowledge_graph.client import KnowledgeGraphClient
 from knowledge_graph.ingestion import DriveToKGIngester
 
@@ -26,8 +28,70 @@ PILOT_PROJECTS = [
 ]
 
 
-def _build_folder_map(drive: DriveService, project_id: str) -> dict:
-    """Load the folder_path → folder_id map from Firestore for a project."""
+def _discover_folder_map(drive: DriveService, project_id: str, project_name: str) -> dict:
+    """
+    Discover the canonical subfolder structure by searching Drive directly.
+    Used as a fallback when no Firestore registry exists for a project.
+    Searches the Drive root for a folder matching '{project_id}*' then walks
+    the CANONICAL_FOLDERS structure within it.
+    """
+    # Find project root folder inside the shared root
+    resp = drive.service.files().list(
+        q=(
+            f"'{DRIVE_ROOT_FOLDER_ID}' in parents "
+            f"and mimeType='application/vnd.google-apps.folder' "
+            f"and name contains '{project_id}' "
+            f"and trashed=false"
+        ),
+        fields="files(id, name)",
+        pageSize=10,
+    ).execute()
+    candidates = resp.get("files", [])
+    if not candidates:
+        print(f"  WARNING: No Drive folder found matching project_id {project_id!r}")
+        return {}
+
+    project_root_id = candidates[0]["id"]
+    print(f"  Discovered project folder: {candidates[0]['name']} ({project_root_id})")
+
+    folder_map = {}
+    # Walk each phase folder then each subfolder
+    for phase_folder, subfolders in CANONICAL_FOLDERS.items():
+        # Find the phase folder
+        phase_resp = drive.service.files().list(
+            q=(
+                f"'{project_root_id}' in parents "
+                f"and mimeType='application/vnd.google-apps.folder' "
+                f"and name='{phase_folder}' "
+                f"and trashed=false"
+            ),
+            fields="files(id, name)",
+        ).execute()
+        phase_candidates = phase_resp.get("files", [])
+        if not phase_candidates:
+            continue
+        phase_id = phase_candidates[0]["id"]
+
+        for sub in subfolders:
+            sub_resp = drive.service.files().list(
+                q=(
+                    f"'{phase_id}' in parents "
+                    f"and mimeType='application/vnd.google-apps.folder' "
+                    f"and name='{sub}' "
+                    f"and trashed=false"
+                ),
+                fields="files(id, name)",
+            ).execute()
+            sub_candidates = sub_resp.get("files", [])
+            if sub_candidates:
+                path = f"{phase_folder}/{sub}"
+                folder_map[path] = sub_candidates[0]["id"]
+
+    return folder_map
+
+
+def _build_folder_map(drive: DriveService, project_id: str, project_name: str) -> dict:
+    """Load folder_path -> folder_id map. Tries Firestore first, falls back to Drive discovery."""
     folder_map = {}
     for phase_folder, subfolders in CANONICAL_FOLDERS.items():
         for sub in subfolders:
@@ -35,6 +99,11 @@ def _build_folder_map(drive: DriveService, project_id: str) -> dict:
             fid = drive.get_folder_id(project_id, path)
             if fid:
                 folder_map[path] = fid
+
+    if not folder_map:
+        print(f"  No Firestore registry for {project_id} -- discovering from Drive...")
+        folder_map = _discover_folder_map(drive, project_id, project_name)
+
     return folder_map
 
 
@@ -50,14 +119,11 @@ def ingest_project(
 
     # Ensure Project node exists in Neo4j
     if not dry_run:
-        # Pull root folder ID from Firestore
-        root_folder_id = drive.get_folder_id(project_id, "") or ""
-        # Fallback: try to retrieve from drive_folders root_folder_id
-        if not root_folder_id:
-            if gcp_integration.firestore_client:
-                doc = gcp_integration.firestore_client.collection("drive_folders").document(project_id).get()
-                if doc.exists:
-                    root_folder_id = doc.to_dict().get("root_folder_id", "")
+        root_folder_id = ""
+        if gcp_integration.firestore_client:
+            doc = gcp_integration.firestore_client.collection("drive_folders").document(project_id).get()
+            if doc.exists:
+                root_folder_id = doc.to_dict().get("root_folder_id", "")
         kg.upsert_project({
             "project_id":           project_id,
             "project_number":       project_id,
@@ -66,17 +132,17 @@ def ingest_project(
             "drive_root_folder_id": root_folder_id,
         })
 
-    folder_map = _build_folder_map(drive, project_id)
+    folder_map = _build_folder_map(drive, project_id, project["name"])
     if not folder_map:
-        print(f"  ⚠ No folder registry found for project {project_id} — run seed_drive_folders.py first.")
+        print(f"  WARNING: No folders found for project {project_id} -- skipping.")
         return {"written": 0, "skipped": 0, "errors": 1, "metadata_only": 0}
 
-    print(f"  Found {len(folder_map)} subfolders in Drive registry")
+    print(f"  Found {len(folder_map)} subfolders")
     stats = ingester.ingest_project(project_id, folder_map=folder_map, dry_run=dry_run)
 
     status = "[DRY RUN] " if dry_run else ""
     print(
-        f"  {status}✓ written={stats['written']}  "
+        f"  {status}done: written={stats['written']}  "
         f"skipped={stats['skipped']}  "
         f"errors={stats['errors']}  "
         f"metadata_only={stats['metadata_only']}"
@@ -106,7 +172,7 @@ def main() -> None:
             print("Available:", ", ".join(p["project_id"] for p in PILOT_PROJECTS))
             sys.exit(1)
 
-    print(f"Ingesting {len(projects)} project(s) from Drive → Neo4j …")
+    print(f"Ingesting {len(projects)} project(s) from Drive to Neo4j ...")
 
     drive = DriveService()
     ingester = DriveToKGIngester()
