@@ -26,6 +26,7 @@ from .auth import create_jwt, get_or_create_user, verify_google_id_token, verify
 from .middleware import UserInfo, require_auth, require_role
 from .models import (
     AddChecklistItemRequest,
+    AddDivergenceNotesRequest,
     ApproveRequest,
     AuditEntrySummary,
     CloseoutChecklistItem,
@@ -38,6 +39,10 @@ from .models import (
     DocumentAnalysisRequest,
     DocumentAnalysisResponse,
     EscalateRequest,
+    GradeAnalysisRequest,
+    GradingSessionResponse,
+    GradingSessionSummary,
+    HumanGradeRequest,
     ModelRegistryEntry,
     ModelRegistryResponse,
     ModelResponseSummary,
@@ -1193,6 +1198,257 @@ def export_analysis_markdown(
         media_type="text/markdown",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+# ---------------------------------------------------------------------------
+# Grading — Auto-grading and Human Comparison
+# ---------------------------------------------------------------------------
+
+@router.post("/grading/grade", tags=["grading"])
+def grade_analysis_result(
+    body: "GradeAnalysisRequest",
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Auto-grade a multi-model analysis result using Claude as the AI judge.
+    
+    Evaluates each model's response on:
+    - Accuracy: Factual correctness against document content
+    - Completeness: Coverage of key document elements  
+    - Relevance: Alignment with analysis query/purpose
+    - Citation Quality: Proper references to document sections
+    
+    Returns a grading session with AI grades for all successful models.
+    """
+    from .models import GradeAnalysisRequest, GradingSessionResponse
+    from grading import get_auto_grader
+    from document_analysis import DocumentAnalysisService
+    
+    # Get the analysis result
+    service = DocumentAnalysisService()
+    
+    # For now, re-run analysis to get the result
+    # In production, this would be cached/stored
+    result = service.analyze_document(
+        content=body.document_content,
+        analysis_prompt=None,
+        use_construction_prompt=False,
+        calling_agent=f"grading:{current_user.uid}",
+    )
+    
+    # Grade the analysis
+    grader = get_auto_grader()
+    session = grader.grade_analysis(
+        analysis_result=result,
+        document_content=body.document_content,
+        analysis_purpose=body.analysis_purpose,
+    )
+    
+    return {
+        "session_id": session.session_id,
+        "analysis_id": session.analysis_id,
+        "document_name": session.document_name,
+        "status": session.status,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "ai_grades": {
+            k: v.to_dict() for k, v in session.ai_grades.items()
+        },
+        "models_graded": len(session.ai_grades),
+    }
+
+
+@router.post("/grading/human-grade", tags=["grading"])
+def submit_human_grade(
+    body: "HumanGradeRequest",
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Submit human grades for a model in a grading session.
+    
+    Compares the human grade against the AI grade and computes divergence.
+    Returns the human grade, divergence analysis, and AI grade summary.
+    """
+    from .models import HumanGradeRequest
+    from grading import get_human_grading_interface
+    
+    interface = get_human_grading_interface()
+    
+    # Convert scores from Pydantic model to dict
+    scores_dict = {
+        k: {"score": v.score, "reasoning": v.reasoning, "evidence": v.evidence}
+        for k, v in body.scores.items()
+    }
+    
+    result = interface.submit_human_grade(
+        session_id=body.session_id,
+        model_id=body.model_id,
+        grader_id=body.grader_id or current_user.uid,
+        scores=scores_dict,
+        notes=body.notes,
+    )
+    
+    return result
+
+
+@router.get("/grading/sessions/{session_id}", tags=["grading"])
+def get_grading_session(
+    session_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Retrieve a grading session with all grades and divergence analyses.
+    """
+    from grading import get_auto_grader
+    
+    grader = get_auto_grader()
+    session = grader.get_session(session_id)
+    
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    
+    return session.to_dict()
+
+
+@router.get("/grading/sessions/{session_id}/for-grading", tags=["grading"])
+def get_session_for_human_grading(
+    session_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Get session details formatted for the human grading interface.
+    
+    Returns models with their AI grades that await human grading.
+    """
+    from grading import get_human_grading_interface
+    
+    interface = get_human_grading_interface()
+    result = interface.get_session_for_grading(session_id)
+    
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    
+    return result
+
+
+@router.get("/grading/sessions/{session_id}/ai-grade/{model_id}", tags=["grading"])
+def get_ai_grade_for_review(
+    session_id: str,
+    model_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Get detailed AI grade for a specific model to assist human grading.
+    """
+    from grading import get_human_grading_interface
+    
+    interface = get_human_grading_interface()
+    result = interface.get_ai_grade_for_review(session_id, model_id)
+    
+    if not result:
+        raise HTTPException(
+            status_code=404, 
+            detail=f"AI grade not found for model {model_id} in session {session_id}"
+        )
+    
+    return result
+
+
+@router.get("/grading/sessions", tags=["grading"])
+def list_grading_sessions(
+    status: Optional[str] = Query(default=None, description="Filter by status"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    current_user: Annotated[UserInfo, Depends(require_auth)] = None,
+):
+    """
+    List grading sessions with optional filtering.
+    
+    Status values: pending, ai_graded, human_graded, complete
+    """
+    from grading import get_auto_grader
+    
+    grader = get_auto_grader()
+    sessions = grader.list_sessions(status=status, limit=limit, offset=offset)
+    
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@router.get("/grading/pending", tags=["grading"])
+def get_pending_sessions(
+    limit: int = Query(default=20, ge=1, le=50),
+    current_user: Annotated[UserInfo, Depends(require_auth)] = None,
+):
+    """
+    Get sessions awaiting human grading (status=ai_graded).
+    """
+    from grading import get_human_grading_interface
+    
+    interface = get_human_grading_interface()
+    sessions = interface.get_pending_sessions(limit=limit)
+    
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@router.get("/grading/divergence-report", tags=["grading"])
+def get_divergence_report(
+    start_date: Optional[str] = Query(default=None, description="Start date (ISO format)"),
+    end_date: Optional[str] = Query(default=None, description="End date (ISO format)"),
+    model_filter: Optional[str] = Query(default=None, description="Filter by model ID"),
+    current_user: Annotated[UserInfo, Depends(require_auth)] = None,
+):
+    """
+    Generate a divergence analysis report.
+    
+    Returns aggregated statistics on AI vs human grading divergence,
+    per-criterion analysis, and calibration recommendations.
+    """
+    from datetime import datetime
+    from grading import get_human_grading_interface
+    
+    interface = get_human_grading_interface()
+    
+    start_dt = datetime.fromisoformat(start_date) if start_date else None
+    end_dt = datetime.fromisoformat(end_date) if end_date else None
+    
+    report = interface.get_divergence_report(
+        start_date=start_dt,
+        end_date=end_dt,
+        model_filter=model_filter,
+    )
+    
+    return report.to_dict()
+
+
+@router.post("/grading/sessions/{session_id}/divergence/{model_id}/notes", tags=["grading"])
+def add_divergence_notes(
+    session_id: str,
+    model_id: str,
+    body: "AddDivergenceNotesRequest",
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Add calibration notes to a divergence analysis.
+    
+    Used to document why divergence occurred and suggest AI grading improvements.
+    """
+    from .models import AddDivergenceNotesRequest
+    from grading import get_human_grading_interface
+    
+    interface = get_human_grading_interface()
+    success = interface.add_divergence_notes(
+        session_id=session_id,
+        model_id=model_id,
+        calibration_notes=body.calibration_notes,
+        action_items=body.action_items,
+    )
+    
+    if not success:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Divergence analysis not found for model {model_id} in session {session_id}"
+        )
+    
+    return {"success": True, "message": "Calibration notes added"}
 
 
 # ---------------------------------------------------------------------------

@@ -250,3 +250,92 @@ CREATE TABLE IF NOT EXISTS closeout_deficiencies (
     FOREIGN KEY (item_id) REFERENCES closeout_checklist(item_id),
     FOREIGN KEY (project_id) REFERENCES projects(project_id)
 );
+
+
+
+-- ---------------------------------------------------------------------------
+-- Grading Sessions — tracks multi-model analysis grading
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS grading_sessions (
+    session_id TEXT PRIMARY KEY,
+    analysis_id TEXT NOT NULL,
+    document_id TEXT,
+    document_name TEXT,
+    status TEXT DEFAULT 'pending',
+    weights TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_grading_sessions_analysis 
+    ON grading_sessions(analysis_id);
+CREATE INDEX IF NOT EXISTS idx_grading_sessions_status 
+    ON grading_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_grading_sessions_created 
+    ON grading_sessions(created_at);
+
+-- ---------------------------------------------------------------------------
+-- Model Grades — AI and human grades for model responses
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS model_grades (
+    grade_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    tier INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    accuracy_score REAL,
+    accuracy_reasoning TEXT,
+    accuracy_evidence TEXT DEFAULT '[]',
+    completeness_score REAL,
+    completeness_reasoning TEXT,
+    completeness_evidence TEXT DEFAULT '[]',
+    relevance_score REAL,
+    relevance_reasoning TEXT,
+    relevance_evidence TEXT DEFAULT '[]',
+    citation_quality_score REAL,
+    citation_quality_reasoning TEXT,
+    citation_quality_evidence TEXT DEFAULT '[]',
+    overall_score REAL NOT NULL,
+    grader_id TEXT,
+    graded_at TEXT NOT NULL,
+    notes TEXT DEFAULT '',
+    FOREIGN KEY (session_id) REFERENCES grading_sessions(session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_grades_session 
+    ON model_grades(session_id);
+CREATE INDEX IF NOT EXISTS idx_model_grades_source 
+    ON model_grades(source);
+CREATE INDEX IF NOT EXISTS idx_model_grades_model 
+    ON model_grades(model_id);
+
+-- ---------------------------------------------------------------------------
+-- Divergence Analyses — AI vs Human grade comparison
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS divergence_analyses (
+    analysis_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    ai_grade_id TEXT NOT NULL,
+    human_grade_id TEXT NOT NULL,
+    criterion_divergences TEXT DEFAULT '[]',
+    overall_ai_score REAL NOT NULL,
+    overall_human_score REAL NOT NULL,
+    overall_difference REAL NOT NULL,
+    overall_level TEXT NOT NULL,
+    analyzed_at TEXT NOT NULL,
+    calibration_notes TEXT DEFAULT '',
+    action_items TEXT DEFAULT '[]',
+    FOREIGN KEY (session_id) REFERENCES grading_sessions(session_id),
+    FOREIGN KEY (ai_grade_id) REFERENCES model_grades(grade_id),
+    FOREIGN KEY (human_grade_id) REFERENCES model_grades(grade_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_divergence_session 
+    ON divergence_analyses(session_id);
+CREATE INDEX IF NOT EXISTS idx_divergence_level 
+    ON divergence_analyses(overall_level);
+CREATE INDEX IF NOT EXISTS idx_divergence_analyzed 
+    ON divergence_analyses(analyzed_at);

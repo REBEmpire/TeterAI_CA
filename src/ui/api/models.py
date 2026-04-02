@@ -266,3 +266,135 @@ class ComparisonViewResponse(BaseModel):
     timing: dict[str, Any]
     summary: dict[str, Any]
     columns: list[dict[str, Any]]
+
+
+
+
+# ---------------------------------------------------------------------------
+# Grading
+# ---------------------------------------------------------------------------
+
+class GradeAnalysisRequest(BaseModel):
+    """Request to auto-grade a multi-model analysis result."""
+    analysis_id: str
+    document_content: str
+    analysis_purpose: str = "General document analysis"
+
+
+class CriterionScoreInput(BaseModel):
+    """Input for a single criterion score."""
+    score: float  # 0-10
+    reasoning: str = ""
+    evidence: list[str] = []
+
+
+class HumanGradeRequest(BaseModel):
+    """Request to submit human grades for a model."""
+    session_id: str
+    model_id: str
+    grader_id: str
+    scores: dict[str, CriterionScoreInput]  # accuracy, completeness, relevance, citation_quality
+    notes: str = ""
+
+
+class CriterionScoreResponse(BaseModel):
+    """Response containing a criterion score."""
+    criterion: str
+    score: float
+    reasoning: str
+    evidence: list[str] = []
+
+
+class ModelGradeResponse(BaseModel):
+    """Response containing a model's grade."""
+    grade_id: str
+    model_id: str
+    model_name: str
+    tier: int
+    source: str  # ai_judge or human
+    accuracy: Optional[CriterionScoreResponse] = None
+    completeness: Optional[CriterionScoreResponse] = None
+    relevance: Optional[CriterionScoreResponse] = None
+    citation_quality: Optional[CriterionScoreResponse] = None
+    overall_score: float
+    grader_id: Optional[str] = None
+    graded_at: Optional[datetime] = None
+    notes: str = ""
+
+
+class CriterionDivergenceResponse(BaseModel):
+    """Response containing divergence for a single criterion."""
+    criterion: str
+    ai_score: float
+    human_score: float
+    difference: float
+    level: str  # none, low, medium, high
+    notes: str = ""
+
+
+class DivergenceAnalysisResponse(BaseModel):
+    """Response containing divergence analysis."""
+    analysis_id: str
+    session_id: str
+    model_id: str
+    model_name: str
+    criterion_divergences: list[CriterionDivergenceResponse]
+    overall_ai_score: float
+    overall_human_score: float
+    overall_difference: float
+    overall_level: str
+    analyzed_at: Optional[datetime] = None
+    calibration_notes: str = ""
+    action_items: list[str] = []
+
+
+class GradingSessionResponse(BaseModel):
+    """Response containing grading session details."""
+    session_id: str
+    analysis_id: str
+    document_id: Optional[str] = None
+    document_name: Optional[str] = None
+    status: str  # pending, ai_graded, human_graded, complete
+    created_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    ai_grades: dict[str, ModelGradeResponse] = {}
+    human_grades: dict[str, ModelGradeResponse] = {}
+    divergence_analyses: dict[str, DivergenceAnalysisResponse] = {}
+
+
+class GradingSessionSummary(BaseModel):
+    """Summary of a grading session for list views."""
+    session_id: str
+    analysis_id: str
+    document_name: Optional[str] = None
+    status: str
+    models_ai_graded: int
+    models_human_graded: int
+    divergence_computed: int
+    created_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class DivergenceReportResponse(BaseModel):
+    """Response containing aggregated divergence report."""
+    report_id: str
+    generated_at: Optional[datetime] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    model_filter: Optional[str] = None
+    total_sessions: int
+    total_grades_compared: int
+    avg_overall_divergence: float
+    max_overall_divergence: float
+    min_overall_divergence: float
+    criterion_stats: dict[str, dict[str, float]] = {}
+    level_distribution: dict[str, int] = {}
+    model_stats: dict[str, dict[str, Any]] = {}
+    trend_data: list[dict[str, Any]] = []
+    recommendations: list[str] = []
+
+
+class AddDivergenceNotesRequest(BaseModel):
+    """Request to add calibration notes to divergence analysis."""
+    calibration_notes: str
+    action_items: list[str] = []
