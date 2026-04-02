@@ -154,36 +154,41 @@ class DocumentIntelligenceService:
         """Process a spec book: detect TOC, validate, chunk, enrich KG."""
         chunks_created = 0
 
-        # Try bookmark-first TOC detection
-        toc_bookmark = self._bookmark_parser.find_toc_bookmark(pdf_path)
-        toc_pages_text = []
+        # --- PRIMARY: attempt bookmark-based section detection ---
+        toc_sections = self._sections_from_bookmarks(pdf_path)
+        bookmark_sections_used = len(toc_sections) > 0
 
-        if toc_bookmark:
-            boundaries = self._bookmark_parser.get_section_boundaries(pdf_path)
-            # Get text from TOC pages
-            toc_start = toc_bookmark["page_number"]
-            for page in pages:
-                pg = page["page_number"] - 1  # 0-based
-                if pg >= toc_start:
+        if not bookmark_sections_used:
+            # --- SECONDARY: TOC text approach ---
+            toc_bookmark = self._bookmark_parser.find_toc_bookmark(pdf_path)
+            toc_pages_text = []
+
+            if toc_bookmark:
+                boundaries = self._bookmark_parser.get_section_boundaries(pdf_path)
+                # Get text from TOC pages
+                toc_start = toc_bookmark["page_number"]
+                for page in pages:
+                    pg = page["page_number"] - 1  # 0-based
+                    if pg >= toc_start:
+                        toc_pages_text.append(page["text"])
+                        # Stop at next major section
+                        if pg > toc_start + 20:
+                            break
+
+            if not toc_pages_text:
+                # Fallback: scan first 30 pages for TOC-like content
+                for page in pages[:30]:
                     toc_pages_text.append(page["text"])
-                    # Stop at next major section
-                    if pg > toc_start + 20:
-                        break
 
-        if not toc_pages_text:
-            # Fallback: scan first 30 pages for TOC-like content
-            for page in pages[:30]:
-                toc_pages_text.append(page["text"])
+            # Parse TOC lines
+            all_lines = []
+            for text in toc_pages_text:
+                all_lines.extend(text.split("\n"))
+            toc_sections = self._spec_parser.parse_toc_lines(all_lines)
 
-        # Parse TOC lines
-        all_lines = []
-        for text in toc_pages_text:
-            all_lines.extend(text.split("\n"))
-        toc_sections = self._spec_parser.parse_toc_lines(all_lines)
-
-        if not toc_sections:
-            # Pattern-matching fallback: scan all pages for section headers
-            toc_sections = self._scan_body_headers(pages)
+            if not toc_sections:
+                # Pattern-matching fallback: scan all pages for section headers
+                toc_sections = self._scan_body_headers(pages)
 
         if not toc_sections:
             errors.append("No spec sections detected via TOC or pattern matching")
@@ -191,7 +196,10 @@ class DocumentIntelligenceService:
 
         # Validate & detect page offset
         page_text_map = {p["page_number"]: p["text"] for p in pages}
-        page_offset = self._spec_validator.detect_page_offset(toc_sections, page_text_map)
+        if bookmark_sections_used:
+            page_offset = 0  # bookmark pages are already absolute 1-based
+        else:
+            page_offset = self._spec_validator.detect_page_offset(toc_sections, page_text_map)
         validation_results = self._spec_validator.validate_sections(
             toc_sections, page_text_map, page_offset
         )
@@ -410,6 +418,43 @@ class DocumentIntelligenceService:
         except Exception as e:
             logger.warning(f"Summary generation failed for {title}: {e}")
             return f"{title}"
+
+    def _sections_from_bookmarks(self, pdf_path: str) -> list[dict]:
+        """
+        Build a toc_sections list directly from PDF bookmarks.
+
+        Bookmark page numbers are 0-based absolute PDF pages. Add 1 to convert
+        to 1-based to match the pages list used by split_pages_by_sections.
+        No page_offset correction is required when using this method.
+
+        Returns [] when fewer than 5 parseable spec sections are found so the
+        caller falls through to the TOC-text approach.
+        """
+        bookmarks = self._bookmark_parser.extract_bookmarks(pdf_path)
+        if not bookmarks:
+            return []
+
+        sections: list[dict] = []
+        for bm in bookmarks:
+            parsed = self._spec_parser.parse_toc_lines([bm["title"]])
+            if parsed:
+                section = parsed[0]
+                section["page_number"] = bm["page_number"] + 1  # 0-based → 1-based
+                sections.append(section)
+
+        if len(sections) < 5:
+            logger.debug(
+                "_sections_from_bookmarks: only %d section(s) from bookmarks "
+                "(need >= 5) — falling through to TOC-text approach",
+                len(sections),
+            )
+            return []
+
+        logger.info(
+            "_sections_from_bookmarks: found %d sections from PDF bookmarks",
+            len(sections),
+        )
+        return sections
 
     def _scan_body_headers(self, pages: list[dict]) -> list[dict]:
         """

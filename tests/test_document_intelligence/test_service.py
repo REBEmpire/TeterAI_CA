@@ -92,3 +92,61 @@ class TestProcessSpecBook:
         chunks = store.get_chunks_by_document(result["document_id"])
         assert len(chunks) == 1
         assert chunks[0]["identifier"] == "09 21 16"
+
+
+class TestSectionsFromBookmarks:
+    def _make_service(self):
+        mock_store = MagicMock()
+        return DocumentIntelligenceService(chunk_store=mock_store, kg_client=None)
+
+    def test_returns_sections_with_1based_pages(self):
+        svc = self._make_service()
+        bookmarks = [
+            {"title": "09 21 16 - Gypsum Board Assemblies", "page_number": 11},
+            {"title": "09 29 00 - Gypsum Board", "page_number": 22},
+            {"title": "09 51 00 - Acoustical Ceilings", "page_number": 35},
+            {"title": "09 65 00 - Resilient Flooring", "page_number": 48},
+            {"title": "09 68 00 - Carpeting", "page_number": 61},
+            {"title": "09 91 00 - Painting", "page_number": 74},
+        ]
+        with patch.object(svc._bookmark_parser, "extract_bookmarks", return_value=bookmarks):
+            result = svc._sections_from_bookmarks("/fake.pdf")
+
+        assert len(result) == 6
+        assert [s["page_number"] for s in result] == [12, 23, 36, 49, 62, 75]
+        assert result[0]["section_number"] == "09 21 16"
+        assert result[0]["division"] == "09"
+
+    def test_threshold_guard_returns_empty(self):
+        svc = self._make_service()
+        bookmarks = [
+            {"title": "09 21 16 - Gypsum Board Assemblies", "page_number": 10},
+            {"title": "09 29 00 - Gypsum Board", "page_number": 20},
+            {"title": "09 51 00 - Acoustical Ceilings", "page_number": 30},
+        ]
+        with patch.object(svc._bookmark_parser, "extract_bookmarks", return_value=bookmarks):
+            result = svc._sections_from_bookmarks("/fake.pdf")
+
+        assert result == []
+
+    def test_no_bookmarks_returns_empty(self):
+        svc = self._make_service()
+        with patch.object(svc._bookmark_parser, "extract_bookmarks", return_value=[]):
+            result = svc._sections_from_bookmarks("/fake.pdf")
+
+        assert result == []
+
+    def test_non_csi_bookmarks_ignored(self):
+        svc = self._make_service()
+        bookmarks = [
+            {"title": "Table of Contents", "page_number": 1},
+            {"title": "Division 09 - Finishes", "page_number": 5},
+            {"title": "09 21 16 - Gypsum Board Assemblies", "page_number": 11},
+            {"title": "09 29 00 - Gypsum Board", "page_number": 22},
+            {"title": "General Notes", "page_number": 3},
+        ]
+        with patch.object(svc._bookmark_parser, "extract_bookmarks", return_value=bookmarks):
+            result = svc._sections_from_bookmarks("/fake.pdf")
+
+        # Only 2 parseable CSI sections — below threshold of 5
+        assert result == []
