@@ -5,6 +5,10 @@
 import type {
   ApproveResponse,
   AuditEntrySummary,
+  CloseoutChecklistItem,
+  CloseoutDeficiency,
+  CloseoutScanResult,
+  CloseoutSummary,
   ModelRegistryEntry,
   ProjectSummary,
   RedTeamAuditData,
@@ -127,6 +131,64 @@ export async function createProject(data: {
   known_senders?: string[]
 }): Promise<ProjectSummary> {
   return request<ProjectSummary>('POST', '/projects', data)
+}
+
+export interface ScanProjectsResponse {
+  imported: ProjectSummary[]
+  skipped: number
+  errors: string[]
+}
+
+export async function scanProjects(): Promise<ScanProjectsResponse> {
+  return request<ScanProjectsResponse>('POST', '/projects/scan')
+}
+
+export async function updateProject(
+  projectId: string,
+  data: { phase?: string; active?: boolean; name?: string },
+): Promise<ProjectSummary> {
+  return request<ProjectSummary>('PATCH', `/projects/${projectId}`, data)
+}
+
+// ---------------------------------------------------------------------------
+// Closeout
+// ---------------------------------------------------------------------------
+
+export async function getCloseoutSummary(projectId: string): Promise<CloseoutSummary> {
+  return request<CloseoutSummary>('GET', `/projects/${projectId}/closeout`)
+}
+
+export async function updateChecklistItem(
+  projectId: string,
+  itemId: string,
+  data: { status?: string; document_path?: string; responsible_party?: string; notes?: string },
+): Promise<CloseoutChecklistItem> {
+  return request<CloseoutChecklistItem>('PATCH', `/projects/${projectId}/closeout/${itemId}`, data)
+}
+
+export async function createDeficiency(
+  projectId: string,
+  itemId: string,
+  data: { description: string; severity?: string },
+): Promise<CloseoutDeficiency> {
+  return request<CloseoutDeficiency>('POST', `/projects/${projectId}/closeout/${itemId}/deficiency`, data)
+}
+
+export async function scanCloseoutFolder(projectId: string): Promise<CloseoutScanResult> {
+  return request<CloseoutScanResult>('POST', `/projects/${projectId}/closeout/scan`)
+}
+
+export async function addChecklistItem(
+  projectId: string,
+  data: {
+    spec_section: string
+    spec_title: string
+    document_type: string
+    urgency?: string
+    responsible_party?: string
+  },
+): Promise<CloseoutChecklistItem> {
+  return request<CloseoutChecklistItem>('POST', `/projects/${projectId}/closeout/items`, data)
 }
 
 // ---------------------------------------------------------------------------

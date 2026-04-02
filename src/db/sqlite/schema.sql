@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS doc_counters (
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS projects (
     project_id TEXT PRIMARY KEY,
+    project_number TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     phase TEXT DEFAULT 'BID',
     known_senders TEXT DEFAULT '[]',
@@ -202,4 +203,50 @@ CREATE TABLE IF NOT EXISTS model_registry (
     version TEXT,
     updated_at TEXT,
     config TEXT NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- Closeout checklist — per spec-section deliverable tracking
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS closeout_checklist (
+    item_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    spec_section TEXT NOT NULL,
+    spec_title TEXT NOT NULL,
+    document_type TEXT NOT NULL,
+    label TEXT NOT NULL,
+    urgency TEXT DEFAULT 'MEDIUM',
+    status TEXT DEFAULT 'NOT_RECEIVED',
+    responsible_party TEXT,
+    document_path TEXT,
+    reviewed_by TEXT,
+    reviewed_at TEXT,
+    deficiency_notes TEXT,
+    notes TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_closeout_project ON closeout_checklist(project_id);
+CREATE INDEX IF NOT EXISTS idx_closeout_status ON closeout_checklist(status);
+CREATE INDEX IF NOT EXISTS idx_closeout_spec ON closeout_checklist(spec_section);
+
+-- ---------------------------------------------------------------------------
+-- Closeout deficiencies — deficiency notices per checklist item
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS closeout_deficiencies (
+    deficiency_id TEXT PRIMARY KEY,
+    item_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    description TEXT NOT NULL,
+    severity TEXT DEFAULT 'MEDIUM',
+    status TEXT DEFAULT 'OPEN',
+    created_by TEXT,
+    created_at TEXT,
+    resolved_by TEXT,
+    resolved_at TEXT,
+    notes TEXT,
+    FOREIGN KEY (item_id) REFERENCES closeout_checklist(item_id),
+    FOREIGN KEY (project_id) REFERENCES projects(project_id)
 );

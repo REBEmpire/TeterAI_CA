@@ -4,7 +4,10 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
-from google.cloud import firestore
+try:
+    from google.cloud import firestore
+except ImportError:
+    firestore = None
 
 from ai_engine.gcp import GCPIntegration
 from audit.logger import AuditLogger

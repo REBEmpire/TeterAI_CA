@@ -18,8 +18,11 @@ Requirements:
     # For desktop-only mode: uv sync  (cloud + kg extras NOT required)
 """
 
+import os
 import sys
 from pathlib import Path
+
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
 ROOT = Path(SPECPATH)   # repo root
 SRC  = ROOT / 'src'
@@ -27,13 +30,38 @@ SRC  = ROOT / 'src'
 # ---------------------------------------------------------------------------
 # Data files bundled into the package
 # ---------------------------------------------------------------------------
-# Format: (source_path_or_glob, dest_dir_inside_bundle)
+# IMPORTANT: Do NOT use (str(SRC), 'src') — that recursively bundles
+# src/ui/desktop/dist-electron/ and src/ui/web/node_modules/, which causes
+# path-length errors on Windows and balloons the bundle size.
+#
+# Instead, list specific Python packages and data directories explicitly.
 
+# Python backend packages
+_py_packages = [
+    'agents', 'ai_engine', 'audit', 'config', 'db',
+    'integrations', 'knowledge_graph', 'storage', 'workflow',
+]
 datas = [
-    # Entire src/ tree — agents, api, config, db, storage, integrations, etc.
-    (str(SRC), 'src'),
-    # Bundled React web UI (served by FastAPI staticfiles from within the bundle)
-    (str(ROOT / 'src' / 'ui' / 'web' / 'dist'), 'src/ui/web/dist'),
+    (str(SRC / pkg), f'src/{pkg}')
+    for pkg in _py_packages
+    if (SRC / pkg).exists()
+]
+
+# UI Python API package (routes, middleware, models, auth, server)
+datas.append((str(SRC / 'ui' / 'api'), 'src/ui/api'))
+
+# Top-level src/__init__.py and any other .py files directly in src/
+for f in SRC.glob('*.py'):
+    datas.append((str(f), 'src'))
+
+# Bundled React web UI (served by FastAPI staticfiles from within the bundle)
+datas.append((str(SRC / 'ui' / 'web' / 'dist'), 'src/ui/web/dist'))
+
+# LiteLLM data files (JSON configs, tokenizer data loaded at runtime)
+# Filter out paths with special chars that break PyInstaller on Windows
+datas += [
+    (src, dst) for src, dst in collect_data_files('litellm')
+    if '(' not in src and ')' not in src
 ]
 
 # ---------------------------------------------------------------------------
@@ -68,10 +96,8 @@ hiddenimports = [
     # Pydantic v2
     'pydantic',
     'pydantic.v1',
-    # LiteLLM — loads providers dynamically
-    'litellm',
-    'litellm.main',
-    'litellm.utils',
+    # LiteLLM — loads providers dynamically (collect all submodules)
+    *collect_submodules('litellm'),
     # Local DB
     'aiosqlite',
     'sqlite3',

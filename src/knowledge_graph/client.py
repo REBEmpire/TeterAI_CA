@@ -116,6 +116,16 @@ class KnowledgeGraphClient:
                 self._reconnect()
         raise last_exc
 
+    def is_connected(self) -> bool:
+        """Return True if the driver exists and can reach the Neo4j server."""
+        if not self._driver:
+            return False
+        try:
+            self._driver.verify_connectivity()
+            return True
+        except Exception:
+            return False
+
     def close(self):
         if self._driver:
             self._driver.close()

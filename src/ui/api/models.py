@@ -91,6 +91,85 @@ class CreateProjectRequest(BaseModel):
     known_senders: list[str] = []
 
 
+class ScanProjectsResponse(BaseModel):
+    imported: list[ProjectSummary]
+    skipped: int
+    errors: list[str]
+
+
+class UpdateProjectRequest(BaseModel):
+    phase: Optional[str] = None
+    active: Optional[bool] = None
+    name: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Closeout
+# ---------------------------------------------------------------------------
+
+class CloseoutChecklistItem(BaseModel):
+    item_id: str
+    project_id: str
+    spec_section: str
+    spec_title: str
+    document_type: str
+    label: str
+    urgency: str
+    status: str
+    responsible_party: Optional[str] = None
+    document_path: Optional[str] = None
+    reviewed_by: Optional[str] = None
+    reviewed_at: Optional[datetime] = None
+    deficiency_notes: Optional[str] = None
+    notes: Optional[str] = None
+
+class UpdateChecklistItemRequest(BaseModel):
+    status: Optional[str] = None
+    document_path: Optional[str] = None
+    responsible_party: Optional[str] = None
+    notes: Optional[str] = None
+
+class CreateDeficiencyRequest(BaseModel):
+    description: str
+    severity: str = "MEDIUM"
+
+class CloseoutDeficiency(BaseModel):
+    deficiency_id: str
+    item_id: str
+    project_id: str
+    description: str
+    severity: str
+    status: str
+    created_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by: Optional[str] = None
+    notes: Optional[str] = None
+
+class CloseoutSummary(BaseModel):
+    project_id: str
+    project_name: str
+    total_items: int
+    not_received: int
+    received: int
+    under_review: int
+    accepted: int
+    deficient: int
+    completion_pct: float
+    items: list[CloseoutChecklistItem]
+    deficiencies: list[CloseoutDeficiency] = []
+
+class CloseoutScanResult(BaseModel):
+    matched: list[dict]
+    unmatched: list[str]
+
+class AddChecklistItemRequest(BaseModel):
+    spec_section: str
+    spec_title: str
+    document_type: str
+    urgency: str = "MEDIUM"
+    responsible_party: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Users (Admin)
 # ---------------------------------------------------------------------------

@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listProjects } from '../api/client'
+import { listProjects, scanProjects } from '../api/client'
+import type { ScanProjectsResponse } from '../api/client'
 import { UrgencyBadge } from '../components/common/UrgencyBadge'
 import { ConfidenceMeter } from '../components/common/ConfidenceMeter'
 import { useTaskQueue } from '../hooks/useTaskQueue'
+import { useAuth } from '../hooks/useAuth'
 import type { DocumentType, ProjectSummary, TaskSummary, Urgency } from '../types'
 
 const DOC_TYPES: DocumentType[] = [
@@ -102,14 +104,33 @@ function TaskCard({ task, index, onClick }: { task: TaskSummary; index: number; 
 
 export function Dashboard() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [filterProject, setFilterProject] = useState('')
   const [filterDocType, setFilterDocType] = useState('')
   const [filterUrgency, setFilterUrgency] = useState('')
   const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [scanning, setScanning] = useState(false)
+  const [scanResult, setScanResult] = useState<ScanProjectsResponse | null>(null)
 
   useEffect(() => {
     listProjects().then(setProjects).catch(() => {/* non-critical */})
   }, [])
+
+  async function handleScanFromDashboard() {
+    setScanning(true)
+    setScanResult(null)
+    try {
+      const result = await scanProjects()
+      setScanResult(result)
+      if (result.imported.length > 0) {
+        setProjects((prev) => [...result.imported, ...prev])
+      }
+    } catch (e: unknown) {
+      setScanResult({ imported: [], skipped: 0, errors: [e instanceof Error ? e.message : 'Scan failed.'] })
+    } finally {
+      setScanning(false)
+    }
+  }
 
   const { tasks, loading, error } = useTaskQueue({
     project: filterProject || undefined,
@@ -260,15 +281,54 @@ export function Dashboard() {
           ))}
         </div>
       ) : tasks.length === 0 ? (
-        <div className="text-center py-20 text-teter-gray-text">
-          <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-white border-2 border-teter-gray-mid shadow-stat mb-4">
-            <svg className="w-7 h-7 text-teter-orange" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-            </svg>
+        projects.length === 0 ? (
+          <div className="text-center py-20 text-teter-gray-text">
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-white border-2 border-teter-orange/30 shadow-stat mb-4">
+              <svg className="w-7 h-7 text-teter-orange" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+              </svg>
+            </div>
+            <p className="font-semibold text-teter-ink text-base">No projects configured</p>
+            <p className="text-sm mt-1 mb-6 max-w-sm mx-auto">
+              {user?.role === 'ADMIN'
+                ? 'Create a new project or scan your Projects folder to import existing ones.'
+                : 'No projects available. Contact your administrator to set up a project.'}
+            </p>
+            {user?.role === 'ADMIN' && (
+              <div className="flex items-center justify-center gap-3">
+                <button className="btn-primary text-sm" onClick={() => navigate('/admin')}>
+                  + New Project
+                </button>
+                <button className="btn-outline text-sm" onClick={handleScanFromDashboard} disabled={scanning}>
+                  {scanning ? 'Scanning\u2026' : 'Scan Folders'}
+                </button>
+              </div>
+            )}
+            {scanResult && (
+              <div className="mt-4 text-sm">
+                {scanResult.imported.length > 0 && (
+                  <span className="text-green-700 font-semibold">{scanResult.imported.length} project(s) imported</span>
+                )}
+                {scanResult.imported.length === 0 && scanResult.errors.length === 0 && (
+                  <span>No new projects found in the Projects root folder.</span>
+                )}
+                {scanResult.errors.length > 0 && (
+                  <span className="text-red-600">{scanResult.errors.join('; ')}</span>
+                )}
+              </div>
+            )}
           </div>
-          <p className="font-semibold text-teter-ink text-base">All caught up</p>
-          <p className="text-sm mt-1">No items pending review.</p>
-        </div>
+        ) : (
+          <div className="text-center py-20 text-teter-gray-text">
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-white border-2 border-teter-gray-mid shadow-stat mb-4">
+              <svg className="w-7 h-7 text-teter-orange" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <p className="font-semibold text-teter-ink text-base">All caught up</p>
+            <p className="text-sm mt-1">No items pending review.</p>
+          </div>
+        )
       ) : (
         <div className="flex flex-col gap-3">
           {tasks.map((task, index) => (

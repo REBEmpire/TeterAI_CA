@@ -25,17 +25,26 @@ from audit.models import HumanReviewAction, HumanReviewLog
 from .auth import create_jwt, get_or_create_user, verify_google_id_token, verify_password_login
 from .middleware import UserInfo, require_auth, require_role
 from .models import (
+    AddChecklistItemRequest,
     ApproveRequest,
     AuditEntrySummary,
+    CloseoutChecklistItem,
+    CloseoutDeficiency,
+    CloseoutScanResult,
+    CloseoutSummary,
+    CreateDeficiencyRequest,
     CreateProjectRequest,
     EscalateRequest,
     ModelRegistryEntry,
+    ModelRegistryResponse,
     ProjectSummary,
-    RejectRequest,
+    ScanProjectsResponse,
     TaskDetail,
     TaskSummary,
     TokenResponse,
+    UpdateChecklistItemRequest,
     UpdateModelRequest,
+    UpdateProjectRequest,
     UpdateRoleRequest,
     UserSummary,
 )
@@ -1007,7 +1016,534 @@ def create_project(
 
     db.collection("projects").document(project_id).set(project_data)
     logger.info(f"Project created: {project_id} by {current_user.uid}")
+
+    # In desktop mode, also create the canonical folder structure on disk
+    if _DESKTOP_MODE:
+        storage = _get_drive()
+        if storage:
+            try:
+                storage.create_project_folders(project_id, body.name)
+            except Exception as exc:
+                logger.error(f"Failed to create local folders for {project_id}: {exc}")
+
     return ProjectSummary(**project_data)
+
+
+@router.post(
+    "/projects/scan",
+    response_model=ScanProjectsResponse,
+    tags=["projects"],
+    dependencies=[Depends(require_role("ADMIN"))],
+)
+def scan_project_folders(
+    current_user: Annotated[UserInfo, Depends(require_role("ADMIN"))],
+):
+    """Scan local Projects directory for unregistered folders and import them."""
+    if not _DESKTOP_MODE:
+        raise HTTPException(status_code=400, detail="Only available in desktop mode.")
+
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    storage = _get_drive()
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage service unavailable.")
+
+    projects_root = storage._root
+    imported: list[ProjectSummary] = []
+    skipped = 0
+    errors: list[str] = []
+
+    for entry in projects_root.iterdir():
+        if not entry.is_dir():
+            continue
+        parts = entry.name.split(" - ", 1)
+        if len(parts) != 2:
+            continue
+        project_id, project_name = parts[0].strip(), parts[1].strip()
+        if not project_id or not project_name:
+            continue
+
+        doc_ref = db.collection("projects").document(project_id)
+        if doc_ref.get().exists:
+            skipped += 1
+            continue
+
+        try:
+            storage.create_project_folders(project_id, project_name)
+            project_data = {
+                "project_number": project_id,
+                "name": project_name,
+                "phase": "Construction",
+                "known_senders": [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_by": current_user.uid,
+                "drive_root_folder_id": "",
+            }
+            doc_ref.set(project_data)
+
+            try:
+                from knowledge_graph.client import kg_client
+                kg_client.upsert_project({
+                    "project_id": project_id,
+                    "project_number": project_id,
+                    "name": project_name,
+                    "phase": "Construction",
+                    "drive_root_folder_id": ""
+                })
+            except Exception as e:
+                logger.warning(f"Failed to upsert scanned project {project_id} to KG: {e}")
+
+            imported.append(ProjectSummary(**project_data))
+        except Exception as e:
+            errors.append(f"Failed importing '{entry.name}': {e}")
+
+    return ScanProjectsResponse(imported=imported, skipped=skipped, errors=errors)
+
+
+# ---------------------------------------------------------------------------
+# Project phase transition
+# ---------------------------------------------------------------------------
+
+_VALID_PHASES = {"bid", "construction", "closeout"}
+
+
+@router.patch(
+    "/projects/{project_id}",
+    response_model=ProjectSummary,
+    tags=["projects"],
+    dependencies=[Depends(require_role("ADMIN"))],
+)
+def update_project(
+    project_id: str,
+    body: UpdateProjectRequest,
+    current_user: Annotated[UserInfo, Depends(require_role("ADMIN"))],
+):
+    """Update a project (phase transition, name, active status)."""
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    doc = db.collection("projects").document(project_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    project_data = doc.to_dict()
+    old_phase = project_data.get("phase", "")
+
+    updates: dict = {}
+    if body.phase is not None:
+        phase = body.phase.lower()
+        if phase not in _VALID_PHASES:
+            raise HTTPException(status_code=400, detail=f"Invalid phase: {body.phase}. Must be one of: {', '.join(_VALID_PHASES)}")
+        updates["phase"] = phase
+    if body.active is not None:
+        updates["active"] = body.active
+    if body.name is not None:
+        updates["name"] = body.name
+
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update.")
+
+    db.collection("projects").document(project_id).set(updates, merge=True)
+
+    # If transitioning TO closeout, seed the checklist
+    new_phase = updates.get("phase", old_phase)
+    if new_phase == "closeout" and old_phase != "closeout":
+        _seed_closeout_checklist(db, project_id)
+        logger.info(f"Closeout checklist seeded for project {project_id}")
+
+    # Log phase transition in audit
+    if "phase" in updates and updates["phase"] != old_phase:
+        _audit.log(
+            log_type="PROJECT_PHASE_TRANSITION",
+            task_id=None,
+            payload={
+                "project_id": project_id,
+                "from_phase": old_phase,
+                "to_phase": updates["phase"],
+                "triggered_by": current_user.uid,
+            },
+        )
+
+    # Fetch updated record
+    updated = db.collection("projects").document(project_id).get().to_dict()
+    updated["project_id"] = project_id
+    return ProjectSummary(**updated)
+
+
+# ---------------------------------------------------------------------------
+# Closeout checklist seed data & helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CLOSEOUT_SECTIONS = [
+    ("01 31 00", "Project Management & Coordination", "PROJECT_DIRECTORY", "LOW"),
+    ("01 33 00", "Submittal Procedures", "RFI_LOG", "LOW"),
+    ("01 77 00", "Closeout Procedures — As-Builts", "AS_BUILT", "MEDIUM"),
+    ("01 77 00", "Closeout Procedures — Testing", "TESTING_REPORT", "MEDIUM"),
+    ("01 78 23", "Operation & Maintenance Data", "OM_MANUAL", "MEDIUM"),
+    ("01 78 36", "Warranties & Bonds — Workmanship", "WARRANTY", "MEDIUM"),
+    ("01 78 36", "Warranties & Bonds — Manufacturer", "WARRANTY", "MEDIUM"),
+    ("01 78 39", "Project Record Documents", "AS_BUILT", "MEDIUM"),
+    ("01 41 00", "Regulatory Requirements", "GOV_PAPERWORK", "HIGH"),
+]
+
+
+def _seed_closeout_checklist(db, project_id: str) -> None:
+    """Generate default closeout checklist items for a project entering closeout phase."""
+    now = datetime.now(timezone.utc).isoformat()
+    for spec_section, spec_title, doc_type, urgency in _DEFAULT_CLOSEOUT_SECTIONS:
+        item_id = str(uuid.uuid4())
+        label = f"Section {spec_section} {spec_title} — {doc_type.replace('_', ' ').title()}"
+        data = {
+            "item_id": item_id,
+            "project_id": project_id,
+            "spec_section": spec_section,
+            "spec_title": spec_title,
+            "document_type": doc_type,
+            "label": label,
+            "urgency": urgency,
+            "status": "NOT_RECEIVED",
+            "created_at": now,
+            "updated_at": now,
+        }
+        db.collection("closeout_checklist").document(item_id).set(data)
+
+
+# ---------------------------------------------------------------------------
+# Closeout CRUD endpoints
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/projects/{project_id}/closeout",
+    response_model=CloseoutSummary,
+    tags=["closeout"],
+)
+def get_closeout_summary(
+    project_id: str,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Get closeout checklist summary and all items for a project."""
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    # Verify project exists
+    proj_doc = db.collection("projects").document(project_id).get()
+    if not proj_doc.exists:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    project_data = proj_doc.to_dict()
+
+    # Fetch checklist items
+    items_raw = list(
+        db.collection("closeout_checklist")
+        .where("project_id", "==", project_id)
+        .stream()
+    )
+    items = []
+    for doc in items_raw:
+        d = doc.to_dict()
+        d["item_id"] = doc.id
+        items.append(CloseoutChecklistItem(**d))
+
+    # Fetch deficiencies
+    deficiencies_raw = list(
+        db.collection("closeout_deficiencies")
+        .where("project_id", "==", project_id)
+        .stream()
+    )
+    deficiencies = []
+    for doc in deficiencies_raw:
+        d = doc.to_dict()
+        d["deficiency_id"] = doc.id
+        deficiencies.append(CloseoutDeficiency(**d))
+
+    # Compute stats
+    total = len(items)
+    status_counts = {"NOT_RECEIVED": 0, "RECEIVED": 0, "UNDER_REVIEW": 0, "ACCEPTED": 0, "DEFICIENT": 0}
+    for item in items:
+        status_counts[item.status] = status_counts.get(item.status, 0) + 1
+
+    completion_pct = (status_counts["ACCEPTED"] / total * 100) if total > 0 else 0.0
+
+    return CloseoutSummary(
+        project_id=project_id,
+        project_name=project_data.get("name", ""),
+        total_items=total,
+        not_received=status_counts["NOT_RECEIVED"],
+        received=status_counts["RECEIVED"],
+        under_review=status_counts["UNDER_REVIEW"],
+        accepted=status_counts["ACCEPTED"],
+        deficient=status_counts["DEFICIENT"],
+        completion_pct=round(completion_pct, 1),
+        items=items,
+        deficiencies=deficiencies,
+    )
+
+
+@router.patch(
+    "/projects/{project_id}/closeout/{item_id}",
+    response_model=CloseoutChecklistItem,
+    tags=["closeout"],
+)
+def update_checklist_item(
+    project_id: str,
+    item_id: str,
+    body: UpdateChecklistItemRequest,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Update a closeout checklist item's status, document path, or notes."""
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    doc = db.collection("closeout_checklist").document(item_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Checklist item not found.")
+
+    existing = doc.to_dict()
+    if existing.get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Item does not belong to this project.")
+
+    updates: dict = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    if body.status is not None:
+        updates["status"] = body.status
+        if body.status in ("ACCEPTED", "DEFICIENT"):
+            updates["reviewed_by"] = current_user.uid
+            updates["reviewed_at"] = updates["updated_at"]
+    if body.document_path is not None:
+        updates["document_path"] = body.document_path
+    if body.responsible_party is not None:
+        updates["responsible_party"] = body.responsible_party
+    if body.notes is not None:
+        updates["notes"] = body.notes
+
+    db.collection("closeout_checklist").document(item_id).set(updates, merge=True)
+
+    updated = db.collection("closeout_checklist").document(item_id).get().to_dict()
+    updated["item_id"] = item_id
+    return CloseoutChecklistItem(**updated)
+
+
+@router.post(
+    "/projects/{project_id}/closeout/{item_id}/deficiency",
+    response_model=CloseoutDeficiency,
+    status_code=status.HTTP_201_CREATED,
+    tags=["closeout"],
+)
+def create_deficiency(
+    project_id: str,
+    item_id: str,
+    body: CreateDeficiencyRequest,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Create a deficiency notice for a checklist item."""
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    # Verify item exists and belongs to project
+    item_doc = db.collection("closeout_checklist").document(item_id).get()
+    if not item_doc.exists:
+        raise HTTPException(status_code=404, detail="Checklist item not found.")
+    if item_doc.to_dict().get("project_id") != project_id:
+        raise HTTPException(status_code=404, detail="Item does not belong to this project.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    deficiency_id = str(uuid.uuid4())
+    data = {
+        "deficiency_id": deficiency_id,
+        "item_id": item_id,
+        "project_id": project_id,
+        "description": body.description,
+        "severity": body.severity,
+        "status": "OPEN",
+        "created_by": current_user.uid,
+        "created_at": now,
+    }
+    db.collection("closeout_deficiencies").document(deficiency_id).set(data)
+
+    # Mark the checklist item as DEFICIENT
+    db.collection("closeout_checklist").document(item_id).set(
+        {"status": "DEFICIENT", "updated_at": now}, merge=True
+    )
+
+    return CloseoutDeficiency(**data)
+
+
+@router.post(
+    "/projects/{project_id}/closeout/scan",
+    response_model=CloseoutScanResult,
+    tags=["closeout"],
+    dependencies=[Depends(require_role("ADMIN"))],
+)
+def scan_closeout_folder(
+    project_id: str,
+    current_user: Annotated[UserInfo, Depends(require_role("ADMIN"))],
+):
+    """Scan the project's 03 - Closeout/ folder and auto-match files to checklist items."""
+    if not _DESKTOP_MODE:
+        raise HTTPException(status_code=400, detail="Only available in desktop mode.")
+
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    storage = _get_drive()
+    if storage is None:
+        raise HTTPException(status_code=503, detail="Storage service unavailable.")
+
+    # Find the project's local root
+    proj_doc = db.collection("projects").document(project_id).get()
+    if not proj_doc.exists:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    # Locate the 03 - Closeout folder
+    project_root = None
+    projects_root = storage._root
+    for entry in projects_root.iterdir():
+        if entry.is_dir() and entry.name.startswith(project_id):
+            project_root = entry
+            break
+
+    if project_root is None:
+        # Try local_root_path from project record
+        local_root = proj_doc.to_dict().get("local_root_path")
+        if local_root:
+            project_root = Path(local_root)
+
+    if project_root is None or not project_root.exists():
+        raise HTTPException(status_code=404, detail="Project folder not found on disk.")
+
+    closeout_dir = project_root / "03 - Closeout"
+    if not closeout_dir.exists():
+        raise HTTPException(status_code=404, detail="03 - Closeout folder not found.")
+
+    # Keyword-to-document-type mapping for file matching
+    _FILE_MATCHERS = [
+        (["project index", "project directory", "directory"], "PROJECT_DIRECTORY"),
+        (["rfi", "request for information"], "RFI_LOG"),
+        (["as-built", "as built", "asbuilt", "testing report", "testing cert", "test report"], "AS_BUILT"),
+        (["testing", "test cert", "certificate"], "TESTING_REPORT"),
+        (["workmanship warrant", "workmanship"], "WARRANTY"),
+        (["manufacturer warrant", "manufacturer"], "WARRANTY"),
+        (["warranty", "warranties"], "WARRANTY"),
+        (["o&m", "o & m", "operation", "maintenance", "om index", "om manual"], "OM_MANUAL"),
+        (["gov", "government", "regulatory", "permit", "certificate of occupancy"], "GOV_PAPERWORK"),
+    ]
+
+    # Collect all files in closeout dir (recursively)
+    all_files = []
+    for f in closeout_dir.rglob("*"):
+        if f.is_file() and f.suffix.lower() in (".pdf", ".docx", ".doc", ".xlsx", ".xls", ".jpg", ".png"):
+            all_files.append(f)
+
+    # Fetch existing checklist items
+    items_raw = list(
+        db.collection("closeout_checklist")
+        .where("project_id", "==", project_id)
+        .stream()
+    )
+    items_by_type: dict[str, list] = {}
+    for doc in items_raw:
+        d = doc.to_dict()
+        d["item_id"] = doc.id
+        doc_type = d.get("document_type", "")
+        items_by_type.setdefault(doc_type, []).append(d)
+
+    matched = []
+    unmatched = []
+    now = datetime.now(timezone.utc).isoformat()
+
+    for f in all_files:
+        fname_lower = f.name.lower()
+        matched_type = None
+
+        for keywords, doc_type in _FILE_MATCHERS:
+            if any(kw in fname_lower for kw in keywords):
+                matched_type = doc_type
+                break
+
+        # Also match by subdirectory name
+        if matched_type is None:
+            parent_lower = f.parent.name.lower()
+            if "warrant" in parent_lower:
+                matched_type = "WARRANTY"
+            elif "o&m" in parent_lower or "o & m" in parent_lower or "maintenance" in parent_lower:
+                matched_type = "OM_MANUAL"
+            elif "gov" in parent_lower:
+                matched_type = "GOV_PAPERWORK"
+
+        if matched_type and matched_type in items_by_type:
+            # Find the first NOT_RECEIVED item of this type
+            target = None
+            for item in items_by_type[matched_type]:
+                if item.get("status") == "NOT_RECEIVED":
+                    target = item
+                    break
+
+            if target:
+                db.collection("closeout_checklist").document(target["item_id"]).set(
+                    {"status": "RECEIVED", "document_path": str(f), "updated_at": now},
+                    merge=True,
+                )
+                target["status"] = "RECEIVED"  # mark used
+                matched.append({
+                    "item_id": target["item_id"],
+                    "file_path": str(f),
+                    "spec_section": target.get("spec_section", ""),
+                    "document_type": matched_type,
+                })
+            else:
+                unmatched.append(str(f))
+        else:
+            unmatched.append(str(f))
+
+    logger.info(f"Closeout scan for {project_id}: {len(matched)} matched, {len(unmatched)} unmatched")
+    return CloseoutScanResult(matched=matched, unmatched=unmatched)
+
+
+@router.post(
+    "/projects/{project_id}/closeout/items",
+    response_model=CloseoutChecklistItem,
+    status_code=status.HTTP_201_CREATED,
+    tags=["closeout"],
+)
+def add_checklist_item(
+    project_id: str,
+    body: AddChecklistItemRequest,
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """Add a custom spec section checklist item."""
+    db = _db()
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database unavailable.")
+
+    proj_doc = db.collection("projects").document(project_id).get()
+    if not proj_doc.exists:
+        raise HTTPException(status_code=404, detail="Project not found.")
+
+    now = datetime.now(timezone.utc).isoformat()
+    item_id = str(uuid.uuid4())
+    label = f"Section {body.spec_section} {body.spec_title} — {body.document_type.replace('_', ' ').title()}"
+    data = {
+        "item_id": item_id,
+        "project_id": project_id,
+        "spec_section": body.spec_section,
+        "spec_title": body.spec_title,
+        "document_type": body.document_type,
+        "label": label,
+        "urgency": body.urgency,
+        "status": "NOT_RECEIVED",
+        "responsible_party": body.responsible_party,
+        "created_at": now,
+        "updated_at": now,
+    }
+    db.collection("closeout_checklist").document(item_id).set(data)
+
+    return CloseoutChecklistItem(**data)
 
 
 # ---------------------------------------------------------------------------
@@ -1836,6 +2372,15 @@ def update_settings(
 
     cfg.save()
     cfg.push_to_env()
+
+    # Reinitialize the Knowledge Graph client if Neo4j settings changed
+    if body.neo4j_uri is not None or body.neo4j_username is not None or body.neo4j_password is not None:
+        try:
+            from knowledge_graph.client import kg_client
+            kg_client._reconnect()
+        except Exception as exc:
+            logger.warning(f"Failed to reconnect kg_client after settings update: {exc}")
+
     return {"status": "saved"}
 
 
@@ -2048,6 +2593,48 @@ async def upload_document(
     except Exception as exc:
         logger.error(f"[upload/document] Failed to write ingest record: {exc}")
         raise HTTPException(status_code=500, detail="Failed to create ingest record.")
+
+    # Create the task record immediately so the dashboard can find it
+    task_doc = {
+        "task_id": task_id,
+        "ingest_id": ingest_id,
+        "status": "PENDING_CLASSIFICATION",
+        "assigned_agent": None,
+        "assigned_reviewer": None,
+        "created_at": now,
+        "updated_at": now,
+        "status_history": [{
+            "from_status": None,
+            "to_status": "PENDING_CLASSIFICATION",
+            "triggered_by": current_user.uid,
+            "trigger_type": "HUMAN",
+            "timestamp": now,
+            "notes": "Manual upload",
+        }],
+        "project_id": resolved_project_id,
+        "project_number": project_number,
+        "document_type": resolved_tool_type.upper() if resolved_tool_type else None,
+        "document_number": None,
+        "phase": None,
+        "urgency": None,
+        "classification_confidence": None,
+        "error_message": None,
+        "correction_captured": False,
+        "sender_name": current_user.display_name,
+        "subject": primary_filename,
+        "source_email": {
+            "from": f"{current_user.display_name} <{current_user.email}>",
+            "subject": primary_filename,
+            "date": now,
+            "body": "",
+        },
+        "attachments": attachment_metadata,
+    }
+    try:
+        db.collection("tasks").document(task_id).set(task_doc)
+    except Exception as exc:
+        logger.error(f"[upload/document] Failed to create task record: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to create task record.")
 
     # Prevent the folder watcher from double-ingesting the same file
     try:

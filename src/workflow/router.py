@@ -4,7 +4,10 @@ from typing import Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
-from google.cloud import firestore
+try:
+    from google.cloud import firestore
+except ImportError:
+    firestore = None
 
 from ai_engine.gcp import GCPIntegration
 from knowledge_graph.client import KnowledgeGraphClient

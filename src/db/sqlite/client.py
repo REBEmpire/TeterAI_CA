@@ -184,6 +184,8 @@ _COLLECTION_TABLE_MAP = {
     "users": ("users", "uid"),
     "processed_emails": ("processed_emails", "message_id"),
     "ai_engine": ("model_registry", "id"),
+    "closeout_checklist": ("closeout_checklist", "item_id"),
+    "closeout_deficiencies": ("closeout_deficiencies", "deficiency_id"),
 }
 
 
@@ -217,6 +219,70 @@ class SQLiteClient:
             conn = self._conn()
             conn.executescript(schema)
             conn.commit()
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        """Apply incremental schema migrations for existing databases."""
+        conn = self._conn()
+        # Migration: add project_number column to projects table
+        cursor = conn.execute("PRAGMA table_info(projects)")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "project_number" not in columns:
+            conn.execute("ALTER TABLE projects ADD COLUMN project_number TEXT NOT NULL DEFAULT ''")
+            conn.commit()
+            logger.info("Migration: added project_number column to projects table")
+
+        # Migration: create closeout tables if they don't exist
+        existing_tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if "closeout_checklist" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS closeout_checklist (
+                    item_id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    spec_section TEXT NOT NULL,
+                    spec_title TEXT NOT NULL,
+                    document_type TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    urgency TEXT DEFAULT 'MEDIUM',
+                    status TEXT DEFAULT 'NOT_RECEIVED',
+                    responsible_party TEXT,
+                    document_path TEXT,
+                    reviewed_by TEXT,
+                    reviewed_at TEXT,
+                    deficiency_notes TEXT,
+                    notes TEXT,
+                    created_at TEXT,
+                    updated_at TEXT,
+                    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_closeout_project ON closeout_checklist(project_id);
+                CREATE INDEX IF NOT EXISTS idx_closeout_status ON closeout_checklist(status);
+                CREATE INDEX IF NOT EXISTS idx_closeout_spec ON closeout_checklist(spec_section);
+            """)
+            conn.commit()
+            logger.info("Migration: created closeout_checklist table")
+        if "closeout_deficiencies" not in existing_tables:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS closeout_deficiencies (
+                    deficiency_id TEXT PRIMARY KEY,
+                    item_id TEXT NOT NULL,
+                    project_id TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    severity TEXT DEFAULT 'MEDIUM',
+                    status TEXT DEFAULT 'OPEN',
+                    created_by TEXT,
+                    created_at TEXT,
+                    resolved_by TEXT,
+                    resolved_at TEXT,
+                    notes TEXT,
+                    FOREIGN KEY (item_id) REFERENCES closeout_checklist(item_id),
+                    FOREIGN KEY (project_id) REFERENCES projects(project_id)
+                );
+            """)
+            conn.commit()
+            logger.info("Migration: created closeout_deficiencies table")
 
     # ------------------------------------------------------------------
     # Generic document-store helpers (JSON blob per row)
@@ -259,7 +325,7 @@ class SQLiteClient:
         # Special handling for tables with named columns
         if table in ("tasks", "email_ingests", "projects", "submittal_reviews",
                      "rfi_log", "users", "thought_chains", "processed_emails",
-                     "folder_registry"):
+                     "folder_registry", "closeout_checklist", "closeout_deficiencies"):
             self._upsert_named_table(conn, table, pk, doc_id, safe_data)
         elif table == "model_registry":
             conn.execute(
