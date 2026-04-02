@@ -470,3 +470,195 @@ export async function getPreBidLessons(
     ...(docTypes ? { doc_types: docTypes } : {}),
   })
 }
+
+// ---------------------------------------------------------------------------
+// Document Analysis (Multi-Model)
+// ---------------------------------------------------------------------------
+
+import type {
+  MultiModelAnalysisResult,
+  ComparisonColumn,
+  GradingSession,
+  GradingSessionSummary,
+  DivergenceReport,
+  CriterionScore,
+} from '../types'
+
+export interface AnalyzeDocumentResponse {
+  analysis: MultiModelAnalysisResult
+  comparison_view: {
+    columns: ComparisonColumn[]
+    document_name: string
+    analysis_id: string
+  }
+}
+
+/**
+ * Analyze a document using multi-model analysis (Claude, Gemini, Grok).
+ * @param file The document file to analyze
+ * @param purpose Optional analysis purpose for context
+ */
+export async function analyzeDocument(
+  file: File,
+  purpose?: string,
+): Promise<AnalyzeDocumentResponse> {
+  const token = getToken()
+  
+  const formData = new FormData()
+  formData.append('file', file)
+  if (purpose) {
+    formData.append('purpose', purpose)
+  }
+
+  const res = await fetch(`${BASE}/document-analysis/analyze`, {
+    method: 'POST',
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new ApiError(res.status, detail?.detail ?? res.statusText)
+  }
+
+  return res.json() as Promise<AnalyzeDocumentResponse>
+}
+
+/**
+ * Get a previously completed analysis by ID
+ */
+export async function getAnalysis(analysisId: string): Promise<MultiModelAnalysisResult> {
+  return request<MultiModelAnalysisResult>('GET', `/document-analysis/${analysisId}`)
+}
+
+/**
+ * Get the comparison view for an analysis
+ */
+export async function getComparisonView(analysisId: string): Promise<{ columns: ComparisonColumn[] }> {
+  return request<{ columns: ComparisonColumn[] }>('GET', `/document-analysis/${analysisId}/comparison`)
+}
+
+// ---------------------------------------------------------------------------
+// Grading (AI + Human Comparison)
+// ---------------------------------------------------------------------------
+
+export interface GradeAnalysisRequest {
+  analysis_id: string
+  document_content: string
+  analysis_purpose: string
+}
+
+export interface HumanGradeInput {
+  session_id: string
+  model_id: string
+  grader_id: string
+  scores: {
+    accuracy: { score: number; reasoning: string; evidence?: string[] }
+    completeness: { score: number; reasoning: string; evidence?: string[] }
+    relevance: { score: number; reasoning: string; evidence?: string[] }
+    citation_quality: { score: number; reasoning: string; evidence?: string[] }
+  }
+  notes?: string
+}
+
+/**
+ * Auto-grade a multi-model analysis result using AI judge (Claude)
+ */
+export async function gradeAnalysis(
+  analysisId: string,
+  documentContent: string,
+  analysisPurpose: string,
+): Promise<GradingSession> {
+  return request<GradingSession>('POST', '/grading/grade', {
+    analysis_id: analysisId,
+    document_content: documentContent,
+    analysis_purpose: analysisPurpose,
+  })
+}
+
+/**
+ * Submit human grades for a model in a grading session
+ */
+export async function submitHumanGrade(input: HumanGradeInput): Promise<GradingSession> {
+  return request<GradingSession>('POST', '/grading/human-grade', input)
+}
+
+/**
+ * Get a grading session by ID
+ */
+export async function getGradingSession(sessionId: string): Promise<GradingSession> {
+  return request<GradingSession>('GET', `/grading/sessions/${sessionId}`)
+}
+
+/**
+ * Get session formatted for human grading interface
+ */
+export async function getSessionForGrading(sessionId: string): Promise<{
+  session: GradingSession
+  models_awaiting_human_grade: string[]
+}> {
+  return request<{ session: GradingSession; models_awaiting_human_grade: string[] }>(
+    'GET',
+    `/grading/sessions/${sessionId}/for-grading`,
+  )
+}
+
+/**
+ * Get AI grade details for a specific model
+ */
+export async function getAIGradeForModel(
+  sessionId: string,
+  modelId: string,
+): Promise<{ grade: import('../types').ModelGrade; model_response: import('../types').ModelAnalysisResponse }> {
+  return request('GET', `/grading/sessions/${sessionId}/ai-grade/${modelId}`)
+}
+
+/**
+ * List grading sessions with optional status filter
+ */
+export async function listGradingSessions(
+  status?: 'pending' | 'ai_graded' | 'human_graded' | 'complete',
+): Promise<GradingSessionSummary[]> {
+  const params = status ? `?status=${status}` : ''
+  return request<GradingSessionSummary[]>('GET', `/grading/sessions${params}`)
+}
+
+/**
+ * List sessions pending human review
+ */
+export async function getPendingGradingSessions(): Promise<GradingSessionSummary[]> {
+  return request<GradingSessionSummary[]>('GET', '/grading/pending')
+}
+
+/**
+ * Get divergence report with optional filters
+ */
+export async function getDivergenceReport(params?: {
+  start_date?: string
+  end_date?: string
+  model_id?: string
+}): Promise<DivergenceReport> {
+  const qs = new URLSearchParams()
+  if (params?.start_date) qs.set('start_date', params.start_date)
+  if (params?.end_date) qs.set('end_date', params.end_date)
+  if (params?.model_id) qs.set('model_id', params.model_id)
+  const query = qs.toString()
+  return request<DivergenceReport>('GET', `/grading/divergence-report${query ? `?${query}` : ''}`)
+}
+
+/**
+ * Add calibration notes to a divergence analysis
+ */
+export async function addDivergenceNotes(
+  sessionId: string,
+  modelId: string,
+  notes: string,
+  actionItems?: string[],
+): Promise<void> {
+  return request('POST', `/grading/sessions/${sessionId}/divergence/${modelId}/notes`, {
+    calibration_notes: notes,
+    action_items: actionItems ?? [],
+  })
+}

@@ -15,6 +15,8 @@ import { UploadView } from './views/UploadView'
 import { PreBidReviewView } from './views/PreBidReviewView'
 import { CloseoutPicker } from './views/CloseoutPicker'
 import { CloseoutReview } from './views/CloseoutReview'
+import { DocumentAnalysisView } from './views/DocumentAnalysisView'
+import { GradingView } from './views/GradingView'
 
 const DESKTOP_MODE = import.meta.env.VITE_DESKTOP_MODE === 'true'
 
@@ -53,6 +55,9 @@ function AppRoutes() {
         <Route path="/prebid-review" element={<PreBidReviewView />} />
         <Route path="/closeout" element={<CloseoutPicker />} />
         <Route path="/projects/:projectId/closeout" element={<CloseoutReview />} />
+        <Route path="/document-analysis" element={<DocumentAnalysisView />} />
+        <Route path="/grading" element={<GradingView />} />
+        <Route path="/grading/:sessionId" element={<GradingView />} />
         {DESKTOP_MODE && (
           <Route path="/settings" element={<SettingsPage />} />
         )}

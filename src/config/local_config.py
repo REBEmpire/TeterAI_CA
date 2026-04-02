@@ -20,15 +20,26 @@ class LocalConfig:
     # AI providers
     anthropic_api_key: str = ""
     google_api_key: str = ""
+    google_ai_api_key: str = ""  # For Gemini embeddings
     xai_api_key: str = ""
 
     # GCP service account key file (Drive, Vertex AI, Secret Manager)
     google_application_credentials: str = ""
 
+    # Embedding configuration
+    voyage_api_key: str = ""       # Voyage-3 embeddings (1536-dim, recommended)
+    huggingface_token: str = ""    # HuggingFace embeddings (BGE-large, local option)
+    embedding_primary_provider: str = ""  # voyage/gemini/google_vertex/huggingface
+    embedding_fallback_providers: str = ""  # comma-separated fallback order
+
     # Knowledge Graph (optional)
     neo4j_uri: str = ""
     neo4j_username: str = ""
     neo4j_password: str = ""
+
+    # Supabase (pgvector storage)
+    supabase_url: str = ""
+    supabase_api_key: str = ""
 
     # Storage paths
     projects_root: str = DEFAULT_PROJECTS_ROOT
@@ -75,15 +86,22 @@ class LocalConfig:
         p.write_text("".join(lines))
 
     def push_to_env(self) -> None:
-        """Push API keys into os.environ so LiteLLM / Neo4j pick them up."""
+        """Push API keys into os.environ so LiteLLM / Neo4j / EmbeddingService pick them up."""
         mapping = {
             "anthropic_api_key": "ANTHROPIC_API_KEY",
             "google_api_key": "GOOGLE_API_KEY",
+            "google_ai_api_key": "GOOGLE_AI_API_KEY",
             "xai_api_key": "XAI_API_KEY",
             "google_application_credentials": "GOOGLE_APPLICATION_CREDENTIALS",
+            "voyage_api_key": "VOYAGE_API_KEY",
+            "huggingface_token": "HUGGINGFACE_TOKEN",
+            "embedding_primary_provider": "EMBEDDING_PRIMARY_PROVIDER",
+            "embedding_fallback_providers": "EMBEDDING_FALLBACK_PROVIDERS",
             "neo4j_uri": "NEO4J_URI",
             "neo4j_username": "NEO4J_USERNAME",
             "neo4j_password": "NEO4J_PASSWORD",
+            "supabase_url": "SUPABASE_URL",
+            "supabase_api_key": "SB_API_KEY",
         }
         for attr, env_var in mapping.items():
             val = getattr(self, attr, "")

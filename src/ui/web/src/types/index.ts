@@ -278,3 +278,155 @@ export interface CloseoutScanResult {
   }>
   unmatched: string[]
 }
+
+// ---------------------------------------------------------------------------
+// Document Analysis types (Multi-Model)
+// ---------------------------------------------------------------------------
+
+export type AnalysisStatus = 'SUCCESS' | 'FAILED' | 'TIMEOUT' | 'RATE_LIMITED'
+
+export interface AnalysisMetadata {
+  model_id: string
+  provider: string
+  model: string
+  tier: number
+  latency_ms: number
+  input_tokens: number
+  output_tokens: number
+  timestamp: string
+}
+
+export interface ModelAnalysisResponse {
+  status: AnalysisStatus
+  content?: string
+  metadata?: AnalysisMetadata
+  error?: string
+  summary?: string
+  key_findings?: string[]
+  recommendations?: string[]
+  confidence_score?: number
+}
+
+export interface MultiModelAnalysisResult {
+  analysis_id: string
+  document_id?: string
+  document_name?: string
+  document_type?: string
+  analysis_purpose?: string
+  started_at: string
+  completed_at?: string
+  tier_1_response?: ModelAnalysisResponse
+  tier_2_response?: ModelAnalysisResponse
+  tier_3_response?: ModelAnalysisResponse
+  total_latency_ms?: number
+  successful_models?: number
+}
+
+export interface ComparisonColumn {
+  model_name: string
+  provider: string
+  tier: number
+  status: AnalysisStatus
+  latency_ms?: number
+  content?: string
+  summary?: string
+  key_findings?: string[]
+  recommendations?: string[]
+  confidence?: number
+  error?: string
+}
+
+// ---------------------------------------------------------------------------
+// Grading types (AI + Human Comparison)
+// ---------------------------------------------------------------------------
+
+export type GradingCriterion = 'ACCURACY' | 'COMPLETENESS' | 'RELEVANCE' | 'CITATION_QUALITY'
+export type GradeSource = 'AI_JUDGE' | 'HUMAN'
+export type DivergenceLevel = 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH'
+
+export interface CriterionScore {
+  score: number  // 0-10
+  reasoning: string
+  evidence?: string[]
+}
+
+export interface ModelGrade {
+  grade_id: string
+  session_id: string
+  model_id: string
+  model_name: string
+  tier: number
+  source: GradeSource
+  accuracy: CriterionScore
+  completeness: CriterionScore
+  relevance: CriterionScore
+  citation_quality: CriterionScore
+  overall_score: number
+  grader_id?: string
+  graded_at: string
+  notes?: string
+}
+
+export interface CriterionDivergence {
+  criterion: GradingCriterion
+  ai_score: number
+  human_score: number
+  difference: number
+  level: DivergenceLevel
+}
+
+export interface DivergenceAnalysis {
+  analysis_id: string
+  session_id: string
+  model_id: string
+  model_name: string
+  criterion_divergences: CriterionDivergence[]
+  overall_ai_score: number
+  overall_human_score: number
+  overall_difference: number
+  overall_level: DivergenceLevel
+  analyzed_at: string
+  calibration_notes?: string
+  action_items?: string[]
+}
+
+export interface GradingSession {
+  session_id: string
+  analysis_id: string
+  document_id?: string
+  document_name?: string
+  status: string
+  ai_grades: Record<string, ModelGrade>
+  human_grades: Record<string, ModelGrade>
+  divergence_analyses: Record<string, DivergenceAnalysis>
+  created_at: string
+  completed_at?: string
+}
+
+export interface GradingSessionSummary {
+  session_id: string
+  analysis_id: string
+  document_name?: string
+  status: string
+  model_count: number
+  ai_graded_count: number
+  human_graded_count: number
+  avg_ai_score?: number
+  avg_divergence?: number
+  created_at: string
+}
+
+export interface DivergenceReport {
+  total_sessions: number
+  total_analyses: number
+  avg_divergence: number
+  divergence_by_criterion: Record<GradingCriterion, number>
+  high_divergence_count: number
+  trends: Array<{
+    period: string
+    avg_divergence: number
+    count: number
+  }>
+  recommendations: string[]
+  generated_at: string
+}

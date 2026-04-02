@@ -323,14 +323,31 @@ class AIEngine:
 
     def generate_embedding(self, text: str) -> list[float]:
         """
-        Generates a vector embedding for the given text.
-        Primary: Google (vertex_ai/text-embedding-004)
-        Fallback 1: Google (gemini/gemini-embedding-2-preview)
-        Fallback 2: xAI (xai/v1/embeddings) or litellm supported embedding.
+        Generates a vector embedding for the given text using the EmbeddingService.
+        
+        Provider priority (with fallback):
+        1. Voyage-3 (1536-dim) — best for technical/legal documents
+        2. Gemini text-embedding-005 (768-dim) — fast, reliable
+        3. Google Vertex AI text-embedding-004 (768-dim) — production fallback
+        4. HuggingFace BGE-large (1024-dim) — local fallback
+        
+        Falls back to legacy litellm implementation if EmbeddingService unavailable.
         """
+        # Try new EmbeddingService first
+        try:
+            from embeddings import get_embedding_service
+            service = get_embedding_service()
+            result = service.embed(text)
+            logger.debug(f"Embedding generated via {result.provider}/{result.model} ({result.dimensions}d)")
+            return result.embedding
+        except ImportError:
+            logger.debug("EmbeddingService not available, using legacy embeddings")
+        except Exception as e:
+            logger.warning(f"EmbeddingService failed, falling back to legacy: {e}")
+        
+        # Legacy fallback via litellm
         timeout = int(os.environ.get("AI_ENGINE_RESPONSE_TIMEOUT_SECONDS", 120))
 
-        # We define a simple fallback chain for embeddings.
         models_to_try = [
             ("google", "vertex_ai/text-embedding-004"),
             ("google", "gemini/gemini-embedding-2-preview"),
@@ -353,5 +370,24 @@ class AIEngine:
 
         logger.critical(f"All embedding tiers exhausted.")
         raise AIEngineExhaustedError(f"All embedding tiers exhausted. Last error: {last_error}")
+    
+    def generate_embedding_batch(self, texts: list[str]) -> list[list[float]]:
+        """
+        Generate embeddings for a batch of texts using the EmbeddingService.
+        More efficient than calling generate_embedding() in a loop.
+        """
+        try:
+            from embeddings import get_embedding_service
+            service = get_embedding_service()
+            result = service.embed_batch(texts)
+            logger.debug(f"Batch embeddings generated via {result.provider}/{result.model} ({len(texts)} texts)")
+            return result.embeddings
+        except ImportError:
+            logger.debug("EmbeddingService not available, using sequential embedding")
+        except Exception as e:
+            logger.warning(f"Batch embedding failed, falling back to sequential: {e}")
+        
+        # Fallback: generate one at a time
+        return [self.generate_embedding(text) for text in texts]
 
 engine = AIEngine()
