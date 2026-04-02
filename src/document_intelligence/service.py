@@ -183,11 +183,7 @@ class DocumentIntelligenceService:
 
         if not toc_sections:
             # Pattern-matching fallback: scan all pages for section headers
-            for page in pages:
-                headers = self._spec_parser.detect_section_headers(page["text"])
-                for h in headers:
-                    h["page_number"] = page["page_number"]
-                    toc_sections.append(h)
+            toc_sections = self._scan_body_headers(pages)
 
         if not toc_sections:
             errors.append("No spec sections detected via TOC or pattern matching")
@@ -205,6 +201,50 @@ class DocumentIntelligenceService:
         section_chunks = self._spec_parser.split_pages_by_sections(
             pages, toc_sections, page_offset
         )
+
+        # Quality check: TOC page numbers may be section-relative (not absolute PDF
+        # pages). Detect two failure modes and fall back to body-text header scanning:
+        #   1. Low valid-span ratio — many sections map to the same TOC page (e.g.
+        #      multiple entries at page 7), producing chunks with page_end < page_start.
+        #   2. Sparse coverage — too few sections for the document length (average
+        #      section > 20 pages), or one section dominates >80% of the document.
+        valid_count = sum(1 for c in section_chunks if c["page_start"] <= c["page_end"])
+        total_doc_pages = len(pages)
+        largest_span = max(
+            (c["page_end"] - c["page_start"] + 1 for c in section_chunks if c["page_start"] <= c["page_end"]),
+            default=0,
+        )
+        too_sparse = (
+            total_doc_pages > 50
+            and len(section_chunks) < total_doc_pages / 20  # avg >20 pages/section
+        )
+        dominant_section = largest_span > total_doc_pages * 0.8
+
+        if section_chunks and (
+            valid_count < len(section_chunks) * 0.5
+            or too_sparse
+            or dominant_section
+        ):
+            logger.info(
+                "TOC page mapping quality low (%d/%d valid spans) — trying body-text header scan",
+                valid_count, len(section_chunks),
+            )
+            body_sections = self._scan_body_headers(pages)
+            if body_sections:
+                body_chunks = self._spec_parser.split_pages_by_sections(pages, body_sections, 0)
+                body_valid = sum(1 for c in body_chunks if c["page_start"] <= c["page_end"])
+                if body_valid > valid_count:
+                    logger.info(
+                        "Body-text detection better: %d valid spans (was %d)",
+                        body_valid, valid_count,
+                    )
+                    toc_sections = body_sections
+                    page_offset = 0
+                    section_chunks = body_chunks
+                    validation_results = self._spec_validator.validate_sections(
+                        toc_sections, page_text_map, 0
+                    )
+                    validation_report = self._spec_validator.generate_report(validation_results)
 
         # Create chunks and enrich KG
         for chunk_data in section_chunks:
@@ -370,6 +410,26 @@ class DocumentIntelligenceService:
         except Exception as e:
             logger.warning(f"Summary generation failed for {title}: {e}")
             return f"{title}"
+
+    def _scan_body_headers(self, pages: list[dict]) -> list[dict]:
+        """
+        Scan all pages for 'SECTION XX XX XX - TITLE' body headers.
+
+        Returns sections sorted by page_number with division added, keeping
+        only the first occurrence of each section_number (avoids duplicates
+        from repeated headers or cross-references).
+        """
+        seen: set[str] = set()
+        body_sections: list[dict] = []
+        for page in pages:
+            for h in self._spec_parser.detect_section_headers(page["text"]):
+                sn = h["section_number"]
+                if sn not in seen:
+                    seen.add(sn)
+                    h["page_number"] = page["page_number"]
+                    h["division"] = self._spec_parser.infer_division(sn)
+                    body_sections.append(h)
+        return body_sections
 
     def _generate_embedding(self, text: str) -> list[float]:
         """Generate embedding for content summary."""

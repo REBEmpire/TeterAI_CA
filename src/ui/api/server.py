@@ -27,6 +27,16 @@ from workflow.router import router as workflow_router
 
 logger = logging.getLogger(__name__)
 
+# Load credentials from ~/.teterai/config.env into the environment before any
+# service clients are initialised. This is a no-op on production where env vars
+# are already injected by the Cloud Run configuration.
+try:
+    from config.local_config import LocalConfig
+    LocalConfig.ensure_exists().push_to_env()
+    logger.info("LocalConfig credentials loaded into environment")
+except Exception as _lc_err:
+    logger.warning(f"LocalConfig not loaded: {_lc_err}")
+
 _DESKTOP_MODE = os.environ.get("DESKTOP_MODE", "").lower() in ("true", "1")
 
 

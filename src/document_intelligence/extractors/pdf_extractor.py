@@ -150,16 +150,44 @@ class PdfExtractor:
 
     def _extract_all_pages_pypdf(self, pdf_path: str) -> Optional[list[str]]:
         """
-        Run pypdf in a subprocess and return a list of per-page text strings.
+        Run pypdf in subprocesses and return a list of per-page text strings.
 
-        Returns None on any failure (subprocess error, timeout, JSON decode error).
-        Timeout: 120 seconds.
+        Extracts in batches of 25 pages so large PDFs (400+ page drawing sets)
+        don't time out. Each batch gets 180 seconds; failed batches yield empty
+        strings rather than aborting the whole document.
+
+        Returns None only if the page count cannot be determined.
+        """
+        page_count = self.get_page_count(pdf_path)
+        if page_count == 0:
+            return None
+
+        _BATCH = 25
+        all_texts: list[str] = []
+        for batch_start in range(0, page_count, _BATCH):
+            batch_end = min(batch_start + _BATCH, page_count)
+            texts = self._extract_page_range_pypdf(pdf_path, batch_start, batch_end)
+            if texts is None:
+                # Fill failed batch with empty strings so subsequent pages continue
+                all_texts.extend([""] * (batch_end - batch_start))
+            else:
+                all_texts.extend(texts)
+        return all_texts
+
+    def _extract_page_range_pypdf(
+        self, pdf_path: str, start: int, end: int
+    ) -> Optional[list[str]]:
+        """
+        Extract a slice of pages [start, end) (0-based) in a subprocess.
+
+        Timeout: 180 seconds per 25-page batch.
+        Returns None on any failure.
         """
         script = (
             "import pypdf, io, sys, json\n"
             "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n"
             f"r = pypdf.PdfReader({repr(pdf_path)})\n"
-            "pages = [p.extract_text() or '' for p in r.pages]\n"
+            f"pages = [r.pages[i].extract_text() or '' for i in range({start}, {end})]\n"
             "print(json.dumps(pages))\n"
         )
         try:
@@ -168,24 +196,25 @@ class PdfExtractor:
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=120,
+                timeout=180,
             )
             if proc.returncode != 0:
                 logger.warning(
-                    "_extract_all_pages_pypdf subprocess failed (exit %d): %s",
-                    proc.returncode,
-                    proc.stderr[:200],
+                    "_extract_page_range_pypdf subprocess failed (exit %d) pages %d-%d of %s: %s",
+                    proc.returncode, start, end, pdf_path, proc.stderr[:200],
                 )
                 return None
             return json.loads(proc.stdout)
         except subprocess.TimeoutExpired:
             logger.warning(
-                "_extract_all_pages_pypdf timed out (120s) for %s", pdf_path
+                "_extract_page_range_pypdf timed out (180s) for pages %d-%d of %s",
+                start, end, pdf_path,
             )
             return None
         except (json.JSONDecodeError, Exception) as exc:
             logger.warning(
-                "_extract_all_pages_pypdf failed for %s: %s", pdf_path, exc
+                "_extract_page_range_pypdf failed for pages %d-%d of %s: %s",
+                start, end, pdf_path, exc,
             )
             return None
 

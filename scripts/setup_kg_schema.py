@@ -23,7 +23,8 @@ CONSTRAINTS = [
     "CREATE CONSTRAINT escalation_unique IF NOT EXISTS FOR (n:EscalationCriteria) REQUIRE n.criteria_id IS UNIQUE",
     "CREATE CONSTRAINT doc_type_unique IF NOT EXISTS FOR (n:DocumentType) REQUIRE n.type_id IS UNIQUE",
     "CREATE CONSTRAINT workflow_step_unique IF NOT EXISTS FOR (n:WorkflowStep) REQUIRE n.step_id IS UNIQUE",
-    "CREATE CONSTRAINT spec_section_unique IF NOT EXISTS FOR (n:SpecSection) REQUIRE n.section_number IS UNIQUE",
+    # SpecSection section_number is NOT globally unique — sections are project-scoped.
+    # upsert_spec_section MERGEs on {section_number, project_id} for idempotency.
     "CREATE CONSTRAINT contract_clause_unique IF NOT EXISTS FOR (n:ContractClause) REQUIRE n.clause_id IS UNIQUE",
     "CREATE CONSTRAINT project_unique IF NOT EXISTS FOR (n:Project) REQUIRE n.project_id IS UNIQUE",
     "CREATE CONSTRAINT ca_document_unique IF NOT EXISTS FOR (n:CADocument) REQUIRE n.drive_file_id IS UNIQUE",

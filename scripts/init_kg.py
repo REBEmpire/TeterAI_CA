@@ -32,7 +32,8 @@ def init_kg():
         logger.info("Creating constraints...")
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (a:Agent) REQUIRE a.agent_id IS UNIQUE")
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (d:DocumentType) REQUIRE d.type_id IS UNIQUE")
-        session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (s:SpecSection) REQUIRE s.section_number IS UNIQUE")
+        # SpecSection section_number is NOT globally unique — sections are project-scoped.
+        # upsert_spec_section MERGEs on {section_number, project_id} for idempotency.
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:ContractClause) REQUIRE c.clause_id IS UNIQUE")
         session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (p:PlaybookRule) REQUIRE p.rule_id IS UNIQUE")
 

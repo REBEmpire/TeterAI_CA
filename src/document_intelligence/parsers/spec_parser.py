@@ -33,20 +33,20 @@ class SpecParser:
     _CSI_SECTION_RE = re.compile(
         r"""
         ^\s*
-        (?:SECTION\s+)?                          # optional "SECTION " prefix
+        (?:SECTION\s+)?                          # optional "SECTION " prefix (any case)
         (?P<section_raw>                          # the section number
             \d{2}\s\d{2}\s\d{2}                  #   spaced:   09 21 16
             |\d{6}                                #   compact:  092116
         )
         \s*
         (?:-\s*)?                                 # optional dash separator
-        (?P<title>[A-Z][A-Z0-9 ,\-/&()]+?)       # title: uppercase words
+        (?P<title>[A-Z][A-Z0-9 ,\-/&()]+?)       # title (re.IGNORECASE makes this match mixed/lower case)
         \s*
         (?:\.{2,}\s*)?                            # optional dot-leader
         (?P<page>\d+)?                            # optional page number
         \s*$
         """,
-        re.VERBOSE,
+        re.VERBOSE | re.IGNORECASE,
     )
 
     # Matches "SECTION XX XX XX - TITLE" at start of line in body text
@@ -58,7 +58,7 @@ class SpecParser:
         (?P<title>[A-Z][A-Z0-9 ,\-/&()]+?)
         \s*$
         """,
-        re.VERBOSE | re.MULTILINE,
+        re.VERBOSE | re.MULTILINE | re.IGNORECASE,
     )
 
     # Matches bare "09 21 16 TITLE 412" (no SECTION prefix)
@@ -69,7 +69,7 @@ class SpecParser:
         (?P<title>[A-Z][A-Z0-9 ,\-/&()]+?)
         \s+(?P<page>\d+)\s*$
         """,
-        re.VERBOSE,
+        re.VERBOSE | re.IGNORECASE,
     )
 
     # ------------------------------------------------------------------

@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     division            TEXT DEFAULT '',
     metadata_json       TEXT DEFAULT '{}',
     verification_status TEXT DEFAULT ''
-                            CHECK (verification_status IN ('', 'matched', 'index_only', 'document_only')),
+                            CHECK (verification_status IN ('', 'matched', 'mismatch', 'page_not_found', 'index_only', 'document_only')),
     embedding           BLOB,
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
