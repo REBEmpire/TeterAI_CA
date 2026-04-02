@@ -13,6 +13,8 @@ import { SplitViewer } from './views/SplitViewer'
 import { SubmittalReviewViewer } from './views/SubmittalReviewViewer'
 import { UploadView } from './views/UploadView'
 import { PreBidReviewView } from './views/PreBidReviewView'
+import { CloseoutPicker } from './views/CloseoutPicker'
+import { CloseoutReview } from './views/CloseoutReview'
 
 const DESKTOP_MODE = import.meta.env.VITE_DESKTOP_MODE === 'true'
 
@@ -49,6 +51,8 @@ function AppRoutes() {
         <Route path="/knowledge-graph" element={<KnowledgeGraphView />} />
         <Route path="/project-intelligence" element={<ProjectIntelligenceView />} />
         <Route path="/prebid-review" element={<PreBidReviewView />} />
+        <Route path="/closeout" element={<CloseoutPicker />} />
+        <Route path="/projects/:projectId/closeout" element={<CloseoutReview />} />
         {DESKTOP_MODE && (
           <Route path="/settings" element={<SettingsPage />} />
         )}

@@ -61,3 +61,11 @@ client_secret_894836945557-akcgg5soemve2cb2qrch3nqdrg29v5dr.apps.googleuserconte
 # Allow Flutter lib directory (overrides Python lib/ exclusion for mobile app)
 !src/ui/mobile/lib/
 !src/ui/mobile/lib/**
+
+# Local testing and credential files
+.env.txt
+Neo4j-*.txt
+Testing Passwords.txt
+TeterAI_CA_Accounts.txt
+WHCCD_*.docx
+West_Hills_RFI_Analysis.docx

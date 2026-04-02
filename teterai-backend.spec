@@ -22,6 +22,8 @@ import os
 import sys
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+
 ROOT = Path(SPECPATH)   # repo root
 SRC  = ROOT / 'src'
 
@@ -55,6 +57,13 @@ for f in SRC.glob('*.py'):
 # Bundled React web UI (served by FastAPI staticfiles from within the bundle)
 datas.append((str(SRC / 'ui' / 'web' / 'dist'), 'src/ui/web/dist'))
 
+# LiteLLM data files (JSON configs, tokenizer data loaded at runtime)
+# Filter out paths with special chars that break PyInstaller on Windows
+datas += [
+    (src, dst) for src, dst in collect_data_files('litellm')
+    if '(' not in src and ')' not in src
+]
+
 # ---------------------------------------------------------------------------
 # Hidden imports
 # (modules that PyInstaller's static analysis misses due to dynamic imports)
@@ -87,10 +96,8 @@ hiddenimports = [
     # Pydantic v2
     'pydantic',
     'pydantic.v1',
-    # LiteLLM — loads providers dynamically
-    'litellm',
-    'litellm.main',
-    'litellm.utils',
+    # LiteLLM — loads providers dynamically (collect all submodules)
+    *collect_submodules('litellm'),
     # Local DB
     'aiosqlite',
     'sqlite3',

@@ -41,7 +41,9 @@ class DispatcherAgent:
             ingests_processed += 1
             ingest = doc.to_dict()
             ingest_id = ingest.get("ingest_id", doc.id)
-            task_id = f"TASK-{ingest_id}-{uuid.uuid4().hex[:8].upper()}"
+            # Reuse task_id from ingest record if upload endpoint already created it;
+            # otherwise generate a new one (e.g. for email-ingested documents).
+            task_id = ingest.get("task_id") or f"TASK-{ingest_id}-{uuid.uuid4().hex[:8].upper()}"
             logger.info(f"[{ingest_id}] Processing ingest → {task_id}")
 
             # Step 1: Mark ingest as CLASSIFYING to prevent duplicate processing
@@ -96,7 +98,8 @@ class DispatcherAgent:
             }
 
             try:
-                db.collection("tasks").document(task_id).set(task_doc)
+                # Use merge=True so we preserve fields from upload-created tasks
+                db.collection("tasks").document(task_id).set(task_doc, merge=True)
             except Exception as e:
                 logger.error(f"[{ingest_id}] Failed to create task doc: {e}")
                 # Restore ingest so it can be retried

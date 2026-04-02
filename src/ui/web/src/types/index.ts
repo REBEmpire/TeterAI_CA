@@ -204,3 +204,77 @@ export interface RedTeamAuditData {
   red_team_critique: RedTeamResult
   final_output: Record<string, unknown>
 }
+
+// ---------------------------------------------------------------------------
+// Closeout types
+// ---------------------------------------------------------------------------
+
+export type CloseoutItemStatus =
+  | 'NOT_RECEIVED'
+  | 'RECEIVED'
+  | 'UNDER_REVIEW'
+  | 'ACCEPTED'
+  | 'DEFICIENT'
+
+export type CloseoutDocType =
+  | 'WARRANTY'
+  | 'OM_MANUAL'
+  | 'AS_BUILT'
+  | 'TESTING_REPORT'
+  | 'GOV_PAPERWORK'
+  | 'PROJECT_DIRECTORY'
+  | 'RFI_LOG'
+
+export interface CloseoutChecklistItem {
+  item_id: string
+  project_id: string
+  spec_section: string
+  spec_title: string
+  document_type: CloseoutDocType
+  label: string
+  urgency: Urgency
+  status: CloseoutItemStatus
+  responsible_party?: string
+  document_path?: string
+  reviewed_by?: string
+  reviewed_at?: string
+  deficiency_notes?: string
+  notes?: string
+}
+
+export interface CloseoutDeficiency {
+  deficiency_id: string
+  item_id: string
+  project_id: string
+  description: string
+  severity: string
+  status: 'OPEN' | 'RESOLVED' | 'WAIVED'
+  created_at?: string
+  resolved_at?: string
+  resolved_by?: string
+  notes?: string
+}
+
+export interface CloseoutSummary {
+  project_id: string
+  project_name: string
+  total_items: number
+  not_received: number
+  received: number
+  under_review: number
+  accepted: number
+  deficient: number
+  completion_pct: number
+  items: CloseoutChecklistItem[]
+  deficiencies: CloseoutDeficiency[]
+}
+
+export interface CloseoutScanResult {
+  matched: Array<{
+    item_id: string
+    file_path: string
+    spec_section: string
+    document_type: string
+  }>
+  unmatched: string[]
+}
