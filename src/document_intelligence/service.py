@@ -435,11 +435,16 @@ class DocumentIntelligenceService:
             return []
 
         sections: list[dict] = []
+        seen: set[tuple] = set()
         for bm in bookmarks:
             parsed = self._spec_parser.parse_toc_lines([bm["title"]])
             if parsed:
                 section = parsed[0]
                 section["page_number"] = bm["page_number"] + 1  # 0-based → 1-based
+                key = (section["section_number"], section["page_number"])
+                if key in seen:
+                    continue  # skip duplicate bookmark entries
+                seen.add(key)
                 sections.append(section)
 
         if len(sections) < 5:
