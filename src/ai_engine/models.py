@@ -13,6 +13,7 @@ class CapabilityClass(str, Enum):
     SUBMITTAL_REVIEW = "SUBMITTAL_REVIEW"
     RED_TEAM_CRITIQUE = "RED_TEAM_CRITIQUE"
     ANALYZE = "ANALYZE"
+    DOCUMENT_ANALYSIS = "DOCUMENT_ANALYSIS"
 
 class Attachment(BaseModel):
     file_type: str

@@ -32,11 +32,15 @@ from .models import (
     CloseoutDeficiency,
     CloseoutScanResult,
     CloseoutSummary,
+    ComparisonViewResponse,
     CreateDeficiencyRequest,
     CreateProjectRequest,
+    DocumentAnalysisRequest,
+    DocumentAnalysisResponse,
     EscalateRequest,
     ModelRegistryEntry,
     ModelRegistryResponse,
+    ModelResponseSummary,
     ProjectSummary,
     ScanProjectsResponse,
     TaskDetail,
@@ -961,6 +965,234 @@ def setup_kg_schema(
     from knowledge_graph.client import kg_client
     kg_client.setup_universal_schema()
     return {"status": "ok", "message": "Knowledge graph schema setup complete."}
+
+
+# ---------------------------------------------------------------------------
+# Document Analysis — Multi-Model Analysis
+# ---------------------------------------------------------------------------
+
+@router.post("/document-analysis/analyze", tags=["document-analysis"])
+def analyze_document_content(
+    body: "DocumentAnalysisRequest",
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Analyze document content using all three AI models (Claude Opus 4.6, 
+    Gemini 3.1 Pro, Grok 4.2) in parallel.
+    
+    Returns structured analysis with side-by-side comparison capability.
+    """
+    from .models import DocumentAnalysisRequest, DocumentAnalysisResponse, ModelResponseSummary
+    from document_analysis import DocumentAnalysisService
+    
+    if not body.content:
+        raise HTTPException(status_code=400, detail="Document content is required")
+    
+    service = DocumentAnalysisService()
+    result = service.analyze_document(
+        content=body.content,
+        document_name=body.document_name,
+        document_type=body.document_type,
+        analysis_prompt=body.analysis_prompt,
+        use_construction_prompt=body.use_construction_prompt,
+        calling_agent=f"web_user:{current_user.uid}",
+    )
+    
+    # Convert to response model
+    models_dict = {}
+    model_names = {1: "Claude Opus 4.6", 2: "Gemini 3.1 Pro", 3: "Grok 4.2"}
+    
+    for tier_key, response in [
+        ("tier_1", result.tier_1_response),
+        ("tier_2", result.tier_2_response),
+        ("tier_3", result.tier_3_response),
+    ]:
+        tier_num = int(tier_key.split("_")[1])
+        if response:
+            models_dict[tier_key] = ModelResponseSummary(
+                tier=tier_num,
+                model_name=model_names[tier_num],
+                provider=response.metadata.provider if response.metadata else "",
+                status=response.status.value,
+                latency_ms=response.metadata.latency_ms if response.metadata else 0,
+                tokens_used=response.metadata.total_tokens if response.metadata else 0,
+                summary=response.summary,
+                key_findings=response.key_findings or [],
+                recommendations=response.recommendations or [],
+                confidence_score=response.confidence_score,
+                error=response.error,
+            )
+    
+    return DocumentAnalysisResponse(
+        analysis_id=result.analysis_id,
+        document_name=result.document_name,
+        document_type=result.document_type,
+        started_at=result.started_at,
+        completed_at=result.completed_at,
+        total_latency_ms=result.total_latency_ms,
+        successful_models=result.successful_models,
+        failed_models=result.failed_models,
+        models=models_dict,
+    )
+
+
+@router.post("/document-analysis/analyze-file", tags=["document-analysis"])
+async def analyze_document_file(
+    file: UploadFile = File(..., description="Document file to analyze"),
+    use_construction_prompt: bool = Form(default=False),
+    analysis_prompt: Optional[str] = Form(default=None),
+    current_user: Annotated[UserInfo, Depends(require_auth)] = None,
+):
+    """
+    Upload and analyze a document file using all three AI models in parallel.
+    
+    Supports: PDF, Word (.docx), Excel (.xlsx), CSV, Text, Markdown, JSON files.
+    """
+    from .models import DocumentAnalysisResponse, ModelResponseSummary
+    from document_analysis import DocumentAnalysisService
+    import tempfile
+    import shutil
+    
+    # Validate file type
+    allowed_extensions = {".pdf", ".docx", ".doc", ".xlsx", ".xls", ".csv", ".txt", ".md", ".json"}
+    file_ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file_ext}. Allowed: {', '.join(allowed_extensions)}"
+        )
+    
+    # Save uploaded file temporarily
+    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp:
+        shutil.copyfileobj(file.file, tmp)
+        tmp_path = tmp.name
+    
+    try:
+        service = DocumentAnalysisService()
+        result = service.analyze_document(
+            file_path=tmp_path,
+            document_name=file.filename,
+            analysis_prompt=analysis_prompt,
+            use_construction_prompt=use_construction_prompt,
+            calling_agent=f"web_user:{current_user.uid}" if current_user else "anonymous",
+        )
+        
+        # Convert to response model
+        models_dict = {}
+        model_names = {1: "Claude Opus 4.6", 2: "Gemini 3.1 Pro", 3: "Grok 4.2"}
+        
+        for tier_key, response in [
+            ("tier_1", result.tier_1_response),
+            ("tier_2", result.tier_2_response),
+            ("tier_3", result.tier_3_response),
+        ]:
+            tier_num = int(tier_key.split("_")[1])
+            if response:
+                models_dict[tier_key] = ModelResponseSummary(
+                    tier=tier_num,
+                    model_name=model_names[tier_num],
+                    provider=response.metadata.provider if response.metadata else "",
+                    status=response.status.value,
+                    latency_ms=response.metadata.latency_ms if response.metadata else 0,
+                    tokens_used=response.metadata.total_tokens if response.metadata else 0,
+                    summary=response.summary,
+                    key_findings=response.key_findings or [],
+                    recommendations=response.recommendations or [],
+                    confidence_score=response.confidence_score,
+                    error=response.error,
+                )
+        
+        return DocumentAnalysisResponse(
+            analysis_id=result.analysis_id,
+            document_name=result.document_name,
+            document_type=result.document_type,
+            started_at=result.started_at,
+            completed_at=result.completed_at,
+            total_latency_ms=result.total_latency_ms,
+            successful_models=result.successful_models,
+            failed_models=result.failed_models,
+            models=models_dict,
+        )
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+@router.post("/document-analysis/comparison", tags=["document-analysis"])
+def get_comparison_view(
+    body: "DocumentAnalysisRequest",
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Analyze document and return a side-by-side comparison view of all model outputs.
+    
+    Returns formatted comparison data optimized for UI rendering.
+    """
+    from .models import DocumentAnalysisRequest, ComparisonViewResponse
+    from document_analysis import DocumentAnalysisService
+    
+    if not body.content:
+        raise HTTPException(status_code=400, detail="Document content is required")
+    
+    service = DocumentAnalysisService()
+    result = service.analyze_document(
+        content=body.content,
+        document_name=body.document_name,
+        document_type=body.document_type,
+        analysis_prompt=body.analysis_prompt,
+        use_construction_prompt=body.use_construction_prompt,
+        calling_agent=f"web_user:{current_user.uid}",
+    )
+    
+    comparison = service.get_comparison_view(result)
+    comparison_json = comparison.to_json()
+    
+    return ComparisonViewResponse(
+        analysis_id=comparison_json["analysis_id"],
+        document=comparison_json["document"],
+        timing=comparison_json["timing"],
+        summary=comparison_json["summary"],
+        columns=comparison_json["columns"],
+    )
+
+
+@router.post("/document-analysis/export-markdown", tags=["document-analysis"])
+def export_analysis_markdown(
+    body: "DocumentAnalysisRequest",
+    current_user: Annotated[UserInfo, Depends(require_auth)],
+):
+    """
+    Analyze document and return the comparison as a downloadable markdown report.
+    """
+    from .models import DocumentAnalysisRequest
+    from document_analysis import DocumentAnalysisService
+    
+    if not body.content:
+        raise HTTPException(status_code=400, detail="Document content is required")
+    
+    service = DocumentAnalysisService()
+    result = service.analyze_document(
+        content=body.content,
+        document_name=body.document_name,
+        document_type=body.document_type,
+        analysis_prompt=body.analysis_prompt,
+        use_construction_prompt=body.use_construction_prompt,
+        calling_agent=f"web_user:{current_user.uid}",
+    )
+    
+    comparison = service.get_comparison_view(result)
+    markdown_content = comparison.to_markdown()
+    
+    filename = f"document_analysis_{result.analysis_id[:8]}.md"
+    
+    return Response(
+        content=markdown_content,
+        media_type="text/markdown",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 # ---------------------------------------------------------------------------

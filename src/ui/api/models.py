@@ -216,3 +216,53 @@ class AuditEntrySummary(BaseModel):
     action: Optional[str] = None
     status: Optional[str] = None
     details: dict[str, Any] = {}
+
+
+# ---------------------------------------------------------------------------
+# Document Analysis
+# ---------------------------------------------------------------------------
+
+class DocumentAnalysisRequest(BaseModel):
+    """Request to analyze a document using multi-model analysis."""
+    content: Optional[str] = None  # Pre-extracted content
+    analysis_prompt: Optional[str] = None  # Custom prompt
+    use_construction_prompt: bool = False  # Use construction-specific prompt
+    document_name: Optional[str] = None
+    document_type: Optional[str] = None
+
+
+class ModelResponseSummary(BaseModel):
+    """Summary of a single model's analysis response."""
+    tier: int
+    model_name: str
+    provider: str
+    status: str
+    latency_ms: int
+    tokens_used: int
+    summary: Optional[str] = None
+    key_findings: list[str] = []
+    recommendations: list[str] = []
+    confidence_score: Optional[float] = None
+    error: Optional[str] = None
+
+
+class DocumentAnalysisResponse(BaseModel):
+    """Response from multi-model document analysis."""
+    analysis_id: str
+    document_name: Optional[str] = None
+    document_type: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    total_latency_ms: int
+    successful_models: int
+    failed_models: int
+    models: dict[str, ModelResponseSummary] = {}
+
+
+class ComparisonViewResponse(BaseModel):
+    """Side-by-side comparison view of all model outputs."""
+    analysis_id: str
+    document: dict[str, Any]
+    timing: dict[str, Any]
+    summary: dict[str, Any]
+    columns: list[dict[str, Any]]
