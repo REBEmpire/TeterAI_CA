@@ -232,6 +232,28 @@ class SQLiteClient:
             conn.commit()
             logger.info("Migration: added project_number column to projects table")
 
+        # Migration: add upload-related columns to email_ingests
+        cursor = conn.execute("PRAGMA table_info(email_ingests)")
+        ei_columns = {row[1] for row in cursor.fetchall()}
+        for col, defn in [
+            ("project_id", "TEXT"),
+            ("project_number", "TEXT"),
+            ("tool_type_hint", "TEXT"),
+            ("uploaded_by", "TEXT"),
+        ]:
+            if col not in ei_columns:
+                conn.execute(f"ALTER TABLE email_ingests ADD COLUMN {col} {defn}")
+                logger.info(f"Migration: added {col} column to email_ingests table")
+        conn.commit()
+
+        # Migration: add local_path column to processed_emails
+        cursor = conn.execute("PRAGMA table_info(processed_emails)")
+        pe_columns = {row[1] for row in cursor.fetchall()}
+        if "local_path" not in pe_columns:
+            conn.execute("ALTER TABLE processed_emails ADD COLUMN local_path TEXT")
+            conn.commit()
+            logger.info("Migration: added local_path column to processed_emails table")
+
         # Migration: create closeout tables if they don't exist
         existing_tables = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"

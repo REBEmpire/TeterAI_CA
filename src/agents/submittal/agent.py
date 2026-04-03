@@ -99,7 +99,7 @@ class SubmittalReviewAgent(RedTeamMixin):
         submittal_text = self._extract_submittal_text(ingest, task_id)
 
         # Step 3: Knowledge Graph — retrieve relevant spec sections
-        spec_sections = self._fetch_spec_sections(submittal_text, task_id)
+        spec_sections = self._fetch_spec_sections(submittal_text, task_id, project_id)
 
         # Step 4: Call all 3 models in parallel
         user_prompt = build_user_prompt(submittal_text, spec_sections, project_id)
@@ -235,14 +235,48 @@ class SubmittalReviewAgent(RedTeamMixin):
             parts.append(ingest.get("subject", "(No content)"))
         return "\n\n".join(parts)
 
-    def _fetch_spec_sections(self, query_text: str, task_id: str) -> list[str]:
-        """Search KG for relevant spec sections to provide as context."""
+    def _fetch_spec_sections(
+        self, query_text: str, task_id: str, project_id: str = ""
+    ) -> list[str]:
+        """Search KG for relevant spec sections; fall back to similar CADocuments when sparse."""
+        results: list[str] = []
+
         try:
             sections = self._kg.search_spec_sections(query_text[:500], top_k=5)
-            return [str(s) for s in sections]
+            results = [str(s) for s in sections]
         except Exception as e:
             logger.warning(f"[{task_id}] KG spec search failed: {e}")
-            return []
+
+        # Fallback: when SpecSection nodes are sparse (doc-intel not yet run),
+        # pull similar CADocuments from the full project library so the AI
+        # still has meaningful project context to compare against.
+        if len(results) < 3:
+            try:
+                docs = self._kg.search_project_documents(
+                    query_text[:500],
+                    project_id=project_id or None,
+                    doc_types=["RFI", "SUBMITTAL", "BULLETIN", "GENERAL"],
+                    top_k=5,
+                )
+                if docs:
+                    logger.info(
+                        f"[{task_id}] Spec sections sparse ({len(results)}); "
+                        f"using {len(docs)} similar project docs as fallback."
+                    )
+                    for d in docs:
+                        doc_type  = d.get("doc_type", "")
+                        doc_num   = d.get("doc_number") or ""
+                        filename  = d.get("filename", "")
+                        summary   = d.get("summary") or ""
+                        proj      = d.get("project_number") or d.get("project_id", "")
+                        label     = f"{doc_type} {doc_num}".strip() if doc_num else (filename or doc_type)
+                        results.append(
+                            f"[Project {proj}] {label}: {summary[:300]}"
+                        )
+            except Exception as e:
+                logger.warning(f"[{task_id}] KG project-doc fallback search failed: {e}")
+
+        return results
 
     def _transition(self, db, task_id: str, from_status: str, to_status: str,
                     notes: str, ts: datetime) -> None:

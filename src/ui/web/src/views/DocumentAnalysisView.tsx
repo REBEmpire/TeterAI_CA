@@ -254,7 +254,7 @@ function ComparisonView({ columns }: { columns: ComparisonColumn[] }) {
               {col.confidence !== undefined && (
                 <div className="mb-4">
                   <span className="text-xs text-teter-gray-text">Confidence</span>
-                  <ConfidenceMeter value={col.confidence} />
+                  <ConfidenceMeter score={col.confidence} />
                 </div>
               )}
 

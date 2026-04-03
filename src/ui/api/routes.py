@@ -9,6 +9,7 @@ import logging
 import mimetypes
 import os
 import secrets
+import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,9 +45,9 @@ from .models import (
     GradingSessionSummary,
     HumanGradeRequest,
     ModelRegistryEntry,
-    ModelRegistryResponse,
     ModelResponseSummary,
     ProjectSummary,
+    RejectRequest,
     ScanProjectsResponse,
     TaskDetail,
     TaskSummary,
@@ -219,6 +220,17 @@ def gmail_callback(code: str = Query(...), state: str = Query(...)):
 # Tasks
 # ---------------------------------------------------------------------------
 
+# All non-terminal task statuses shown in the dashboard.
+# Terminal statuses (APPROVED, REJECTED, DELIVERED) are excluded by default.
+ACTIVE_STATUSES = {
+    "PENDING_CLASSIFICATION",
+    "CLASSIFYING",
+    "ASSIGNED_TO_AGENT",
+    "PROCESSING",
+    "STAGED_FOR_REVIEW",
+    "ESCALATED_TO_HUMAN",
+}
+# Backwards-compat alias used in approval/rejection handlers
 REVIEWABLE_STATUSES = {"STAGED_FOR_REVIEW", "ESCALATED_TO_HUMAN"}
 
 
@@ -228,18 +240,23 @@ def list_tasks(
     project: Optional[str] = Query(None),
     doc_type: Optional[str] = Query(None),
     urgency: Optional[str] = Query(None),
+    status: Optional[str] = Query(None, description="Filter by exact status; omit for all active"),
     limit: int = Query(50, le=200),
 ):
     """
-    Return tasks in STAGED_FOR_REVIEW or ESCALATED_TO_HUMAN, sorted by
-    urgency DESC then created_at ASC. Optionally filtered by project/type/urgency.
+    Return all active tasks (PENDING_CLASSIFICATION → ESCALATED_TO_HUMAN), sorted by
+    urgency DESC then created_at ASC. Optionally filtered by project/type/urgency/status.
+    Terminal statuses (APPROVED, REJECTED, DELIVERED) are excluded unless ?status= is set.
     """
     db = _db()
     if db is None:
         return []
 
     try:
-        query = db.collection("tasks").where("status", "in", list(REVIEWABLE_STATUSES))
+        if status:
+            query = db.collection("tasks").where("status", "==", status)
+        else:
+            query = db.collection("tasks").where("status", "in", list(ACTIVE_STATUSES))
         if project:
             query = query.where("project_number", "==", project)
         if doc_type:
@@ -590,9 +607,27 @@ def get_source_file(
     current_user: Annotated[UserInfo, Depends(require_auth)],
 ):
     """
-    Proxy Drive file bytes to the browser (used by SplitViewer iframes).
-    The file_id is a Google Drive file ID stored in task.attachments[].drive_file_id.
+    Serve source file bytes to the browser (used by SplitViewer iframes).
+    For locally-uploaded files the file_id matches attachment[].file_id and the
+    bytes are read from attachment[].local_path.  For Drive-backed tasks the
+    file_id is a Google Drive file ID and bytes are fetched via the Drive proxy.
     """
+    # Local-file path: look up the task's attachment by file_id and serve from disk.
+    db = _db()
+    if db is not None:
+        try:
+            task_doc = db.collection("tasks").document(task_id).get()
+            if task_doc.exists:
+                for att in (task_doc.to_dict() or {}).get("attachments", []):
+                    if att.get("file_id") == file_id and att.get("local_path"):
+                        local_path = Path(att["local_path"])
+                        if local_path.exists():
+                            mime_type = att.get("content_type", "application/octet-stream")
+                            return Response(content=local_path.read_bytes(), media_type=mime_type)
+        except Exception as e:
+            logger.warning(f"[source/files] Local lookup failed for {file_id}: {e}")
+
+    # Drive path: proxy the file through the storage service.
     drive = _get_drive()
     if drive is None:
         raise HTTPException(status_code=503, detail="Drive service unavailable.")
@@ -2707,11 +2742,13 @@ def _load_thought_chain(db, task_id: str) -> dict:
 
 
 def _to_task_summary(data: dict) -> TaskSummary:
+    # Use `or` fallbacks rather than dict.get() defaults because the key may
+    # exist with a None value (e.g. freshly-uploaded tasks before classification).
     return TaskSummary(
-        task_id=data.get("task_id", ""),
-        status=data.get("status", ""),
-        urgency=data.get("urgency", "LOW"),
-        document_type=data.get("document_type", "UNKNOWN"),
+        task_id=data.get("task_id") or "",
+        status=data.get("status") or "PENDING_CLASSIFICATION",
+        urgency=data.get("urgency") or "LOW",
+        document_type=data.get("document_type") or "UNKNOWN",
         document_number=data.get("document_number"),
         project_number=data.get("project_number"),
         sender_name=data.get("sender_name"),
@@ -2947,6 +2984,107 @@ def _guess_content_type(filename: str) -> str:
     return mt or "application/octet-stream"
 
 
+def _extract_upload_text(content: bytes, filename: str, max_chars: int = 8000) -> str:
+    """
+    Extract plain text from an uploaded file's bytes.
+    Runs pypdf / python-docx in a subprocess sandbox so a corrupt file can't
+    crash the API process.  Returns text truncated to max_chars, or "" on failure.
+    """
+    import subprocess
+    import sys
+    import tempfile
+
+    mime = _guess_content_type(filename)
+
+    # ---------- plain text ----------
+    if mime == "text/plain":
+        try:
+            return content.decode("utf-8", errors="replace")[:max_chars]
+        except Exception:
+            return ""
+
+    # ---------- PDF ----------
+    if mime == "application/pdf":
+        if not content or len(content) < 4 or not content.startswith(b"%PDF"):
+            logger.warning(f"[upload] {filename!r}: not a valid PDF")
+            return ""
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                f.write(content)
+                tmp = f.name
+            script = (
+                "import pypdf, io, sys\n"
+                "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n"
+                f"r = pypdf.PdfReader(open({repr(tmp)}, 'rb'))\n"
+                "print('\\n'.join(p.extract_text() or '' for p in r.pages))\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=60,
+            )
+            if proc.returncode != 0:
+                logger.warning(f"[upload] PDF extraction failed for {filename!r}: {proc.stderr[:200]}")
+                return ""
+            text = proc.stdout
+            if len(text.strip()) < 20:
+                logger.warning(f"[upload] PDF {filename!r} produced very little text — may be scanned/image-only")
+            return text[:max_chars]
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[upload] PDF extraction timed out for {filename!r}")
+            return ""
+        except Exception as e:
+            logger.warning(f"[upload] PDF extraction error for {filename!r}: {e}")
+            return ""
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+    # ---------- DOCX ----------
+    if mime in (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/msword",
+    ):
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as f:
+                f.write(content)
+                tmp = f.name
+            script = (
+                "import io, sys\n"
+                "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n"
+                "from docx import Document\n"
+                f"doc = Document({repr(tmp)})\n"
+                "print('\\n'.join(p.text for p in doc.paragraphs if p.text.strip()))\n"
+            )
+            proc = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True, encoding="utf-8", errors="replace", timeout=30,
+            )
+            if proc.returncode != 0:
+                logger.warning(f"[upload] DOCX extraction failed for {filename!r}: {proc.stderr[:200]}")
+                return ""
+            return proc.stdout[:max_chars]
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[upload] DOCX extraction timed out for {filename!r}")
+            return ""
+        except Exception as e:
+            logger.warning(f"[upload] DOCX extraction error for {filename!r}: {e}")
+            return ""
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+    logger.info(f"[upload] No text extractor for MIME type {mime!r} ({filename!r})")
+    return ""
+
+
 @router.post("/upload/document", tags=["upload"])
 async def upload_document(
     current_user: Annotated[UserInfo, Depends(require_auth)],
@@ -3012,10 +3150,20 @@ async def upload_document(
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     primary_filename = primary_file.filename or f"upload_{timestamp}.bin"
 
-    # Save primary file
+    # Save primary file and extract its text so agents have content to work from.
+    # (Agents read body_text from the ingest record; without extraction it would be empty.)
     primary_dest = upload_dir / f"{timestamp}_{primary_filename}"
     primary_content = await primary_file.read()
     primary_dest.write_bytes(primary_content)
+    extracted_body_text = _extract_upload_text(primary_content, primary_filename)
+    if extracted_body_text:
+        logger.info(
+            f"[upload/document] Extracted {len(extracted_body_text)} chars from {primary_filename!r}"
+        )
+    else:
+        logger.warning(
+            f"[upload/document] No text extracted from {primary_filename!r} — agents will classify from filename only"
+        )
 
     # Save supporting files
     supporting_metadata: list[dict] = []
@@ -3029,6 +3177,7 @@ async def upload_document(
                 "filename": sf_name,
                 "content_type": _guess_content_type(sf_name),
                 "local_path": str(sf_dest),
+                "file_id": sf_dest.name,
             })
 
     # Build ingest record (mirrors email_ingest schema from watcher._ingest_attachment)
@@ -3041,6 +3190,7 @@ async def upload_document(
             "filename": primary_filename,
             "content_type": _guess_content_type(primary_filename),
             "local_path": str(primary_dest),
+            "file_id": primary_dest.name,
         },
         *supporting_metadata,
     ]
@@ -3052,12 +3202,12 @@ async def upload_document(
         "sender_email": current_user.email,
         "sender_name": current_user.display_name,
         "subject": primary_filename,
-        "body_text": "",
-        "body_text_truncated": False,
+        "body_text": extracted_body_text,
+        "body_text_truncated": len(extracted_body_text) >= 8000,
         "attachment_metadata": attachment_metadata,
         "subject_hints": {
-            "document_type": resolved_tool_type.upper(),
-            "project_number": project_number,
+            "doc_type_hint": resolved_tool_type.upper(),
+            "project_number_hint": project_number,
         },
         "status": "PENDING_CLASSIFICATION",
         "task_id": task_id,
@@ -3134,6 +3284,21 @@ async def upload_document(
         })
     except Exception as exc:
         logger.warning(f"[upload/document] Could not write processed_emails guard record: {exc}")
+
+    # Kick off an immediate dispatcher run so the task doesn't sit in
+    # PENDING_CLASSIFICATION until the next background poll cycle.
+    def _dispatch_now() -> None:
+        try:
+            from ai_engine.gcp import gcp_integration as _gcp
+            from ai_engine.engine import engine as _ai_engine
+            from agents.dispatcher.agent import DispatcherAgent
+            result = DispatcherAgent(gcp=_gcp, ai_engine=_ai_engine).run()
+            if result:
+                logger.info(f"[upload/document] Immediate dispatch: classified {result}")
+        except Exception as _e:
+            logger.warning(f"[upload/document] Immediate dispatch failed (background poll will retry): {_e}")
+
+    threading.Thread(target=_dispatch_now, daemon=True, name=f"dispatch-{task_id[:12]}").start()
 
     return {
         "task_id": task_id,

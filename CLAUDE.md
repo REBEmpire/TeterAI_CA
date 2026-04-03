@@ -71,7 +71,20 @@ src/
         api/client.ts   # All typed fetch wrappers for the backend
         types/index.ts  # Shared TypeScript types
   agents/               # Agent implementations (RFI, Submittal, Dispatcher, etc.)
-  document_intelligence/ # (planned) Spec-book + drawing-set chunking pipeline
+  document_intelligence/ # Spec-book + drawing-set chunking into SpecSection/DrawingSheet nodes
+  document_analysis/
+    document_analysis_service.py  # Multi-model parallel analysis (3 models simultaneously)
+    comparison_view.py            # Side-by-side comparison formatter (JSON / markdown / HTML)
+    model_response.py             # ModelAnalysisResponse, MultiModelAnalysisResult Pydantic models
+  embeddings/
+    service.py                    # EmbeddingService — unified gateway with provider fallback chain
+    providers.py                  # Voyage, Gemini, Vertex AI, HuggingFace, OpenAI providers
+    models.py                     # EmbeddingResult, BatchEmbeddingResult, EmbeddingConfig
+  grading/
+    grading_service.py            # AutoGrader — Claude-as-judge scores model responses
+    grading_models.py             # GradingCriterion, ModelGrade, DivergenceAnalysis, GradingSession
+    grading_storage.py            # SQLite persistence for grades and sessions
+    human_grading.py              # HumanGradingInterface — submit grades, divergence reports
 ```
 
 ---
@@ -138,11 +151,88 @@ eliminate historically-recurring problems before bid documents go out.
 
 **KG methods:** `get_prebid_lessons` (vector search filtered to RFI/CO types), `get_hotspot_topics` (count-based top issues)
 
-### Planned — Phase G: Document Intelligence Service
-Designed in `docs/superpowers/specs/2026-04-01-document-intelligence-service-design.md`.
+### Phase G: Document Intelligence Service
 Chunks spec books and drawing sets into `SpecSection` / `DrawingSheet` nodes so agents
 can retrieve exactly the relevant content rather than truncated 3,000-char summaries.
-**Not yet implemented.**
+Design spec: `docs/superpowers/specs/2026-04-01-document-intelligence-service-design.md`
+
+**Key file:** `src/document_intelligence/service.py`
+**Tests:** `tests/test_document_intelligence/test_service.py`
+
+Uses PDF bookmarks as the primary spec section detector; falls back to heading-pattern
+extraction. Deduplicates bookmark-derived sections (fixed in `a5f1240`).
+
+### Phase H: Multi-Model Document Analysis
+Runs any uploaded document through three AI models in parallel and presents results
+side-by-side for comparison. Supports construction-specific analysis prompts.
+
+**New NavBar link:** "Document Analysis" → `/document-analysis`
+**View:** `src/ui/web/src/views/DocumentAnalysisView.tsx`
+**Service:** `src/document_analysis/document_analysis_service.py`
+
+**Models run in parallel:**
+- Tier 1: Claude Opus 4.6 (Anthropic)
+- Tier 2: Gemini 2.5 Pro (Google)
+- Tier 3: Grok (xAI)
+
+**Backend endpoints:**
+- `POST /api/v1/document-analysis/analyze` — analyze raw content string
+- `POST /api/v1/document-analysis/analyze-file` — upload and analyze file (PDF, DOCX, TXT, MD)
+- `POST /api/v1/document-analysis/comparison` — fetch comparison view JSON
+- `POST /api/v1/document-analysis/export-markdown` — export analysis as markdown
+
+**Key classes:** `DocumentAnalysisService`, `MultiModelAnalysisResult`, `ModelAnalysisResponse`,
+`ComparisonViewFormatter`
+
+### Phase I: Embeddings Service
+Unified embedding gateway with automatic multi-provider fallback. Replaces direct Vertex AI
+calls in ingestion with a provider-agnostic interface.
+
+**Service:** `src/embeddings/service.py` — `EmbeddingService` singleton
+
+**Provider priority chain (default):**
+1. Voyage-3 (1536-dim) — primary, best for technical docs (`VOYAGE_API_KEY`)
+2. Gemini text-embedding-005 (768-dim) — secondary (`GOOGLE_API_KEY`)
+3. Google Vertex AI text-embedding-004 (768-dim) — tertiary
+4. HuggingFace BGE-large (1024-dim) — local fallback (`HUGGINGFACE_TOKEN`)
+5. OpenAI text-embedding-3-large (3072-dim) — if available (`OPENAI_API_KEY`)
+
+**Env vars:**
+- `EMBEDDING_PRIMARY_PROVIDER` — override primary (voyage|gemini|google_vertex|huggingface|openai)
+- `EMBEDDING_FALLBACK_PROVIDERS` — comma-separated fallback order override
+- `EMBEDDING_DISABLE_FALLBACK` — set `true` to hard-fail instead of falling back
+
+### Phase J: AI Grading & Human Calibration
+Auto-grades each model's document analysis response using Claude as AI judge, then lets
+human reviewers submit their own scores. Computes divergence to calibrate the AI grader
+over time.
+
+**New NavBar link:** "Grading" → `/grading`
+**View:** `src/ui/web/src/views/GradingView.tsx`
+
+**Grading criteria (weighted):**
+| Criterion | Weight | Description |
+|---|---|---|
+| `ACCURACY` | 30% | Factual correctness vs. document content |
+| `COMPLETENESS` | 25% | Coverage of key elements |
+| `RELEVANCE` | 25% | Alignment with analysis purpose |
+| `CITATION_QUALITY` | 20% | Proper document references |
+
+**Storage:** SQLite (`~/.teterai_ca/teterai_ca.db`) — tables: `grading_sessions`, `model_grades`,
+`divergence_analyses`. Thread-safe with WAL journaling.
+
+**Backend endpoints:**
+- `POST /api/v1/grading/grade` — auto-grade a `MultiModelAnalysisResult` via Claude
+- `POST /api/v1/grading/human-grade` — submit human scores; triggers divergence computation
+- `GET /api/v1/grading/sessions/{session_id}` — full session with all grades
+- `GET /api/v1/grading/sessions/{session_id}/for-grading` — formatted for human grader UI
+- `GET /api/v1/grading/sessions` — list sessions (filter by `status`)
+- `GET /api/v1/grading/pending` — sessions awaiting human review
+- `GET /api/v1/grading/divergence-report` — aggregated AI vs human divergence metrics
+- `POST /api/v1/grading/sessions/{session_id}/divergence/{model_id}/notes` — add calibration notes
+
+**Key classes:** `AutoGrader`, `HumanGradingInterface`, `GradingSession`, `ModelGrade`,
+`DivergenceAnalysis`, `DivergenceReport`, `GradingStorage`
 
 ---
 
@@ -320,6 +410,11 @@ LocalConfig.ensure_exists().push_to_env()
 | `INGEST_MAX_WORKERS` | `4` | Concurrent Drive ingestion threads |
 | `KG_EMBEDDING_SIMILARITY_THRESHOLD` | `0.70` | Cosine similarity floor for vector search |
 | `VITE_DESKTOP_MODE` | `false` | Enables Settings page, hides Admin link |
+| `EMBEDDING_PRIMARY_PROVIDER` | `voyage` | Primary embedding provider |
+| `EMBEDDING_FALLBACK_PROVIDERS` | auto | Comma-separated fallback chain override |
+| `EMBEDDING_DISABLE_FALLBACK` | `false` | Hard-fail instead of falling back to next provider |
+| `VOYAGE_API_KEY` | — | Voyage-3 embeddings (primary) |
+| `HUGGINGFACE_TOKEN` | — | HuggingFace BGE-large embeddings (local fallback) |
 
 ---
 
@@ -380,4 +475,13 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/projects/com
 curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"query_text":"exterior waterproofing","source_project_ids":["11900"]}' \
   http://localhost:8000/api/v1/prebid-lessons
+
+# Document Analysis
+curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"content":"...","document_name":"spec.pdf","use_construction_prompt":true}' \
+  http://localhost:8000/api/v1/document-analysis/analyze
+
+# Grading
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/grading/pending
+curl -H "Authorization: Bearer $TOKEN" "http://localhost:8000/api/v1/grading/divergence-report"
 ```

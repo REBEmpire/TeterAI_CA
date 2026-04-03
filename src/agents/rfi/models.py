@@ -20,6 +20,8 @@ class KGLookupResult(BaseModel):
     playbook_rules: List[dict] = []
     workflow_steps: List[dict] = []
     contract_clause: Optional[dict] = None
+    # Fallback: similar past project documents (used when spec sections are sparse)
+    similar_project_docs: List[dict] = []
 
 
 class RFIResponse(BaseModel):

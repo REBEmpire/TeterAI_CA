@@ -21,6 +21,21 @@ const URGENCY_ACCENT: Record<string, string> = {
   ESCALATED: '#6d28d9',
 }
 
+/** Pipeline statuses that haven't reached the human-review queue yet */
+const PIPELINE_STATUSES = new Set([
+  'PENDING_CLASSIFICATION',
+  'CLASSIFYING',
+  'ASSIGNED_TO_AGENT',
+  'PROCESSING',
+])
+
+const PIPELINE_STATUS_LABEL: Record<string, string> = {
+  PENDING_CLASSIFICATION: 'Queued',
+  CLASSIFYING: 'Classifying…',
+  ASSIGNED_TO_AGENT: 'Agent assigned',
+  PROCESSING: 'Processing…',
+}
+
 function ageLabel(createdAt?: string): string {
   if (!createdAt) return ''
   const ms = Date.now() - new Date(createdAt).getTime()
@@ -33,8 +48,11 @@ function ageLabel(createdAt?: string): string {
 
 function TaskCard({ task, index, onClick }: { task: TaskSummary; index: number; onClick: () => void }) {
   const isEscalated = task.status === 'ESCALATED_TO_HUMAN'
+  const isPipeline = PIPELINE_STATUSES.has(task.status)
   const accentColor = isEscalated
     ? URGENCY_ACCENT.ESCALATED
+    : isPipeline
+    ? '#9e9e9e'
     : (URGENCY_ACCENT[task.urgency] ?? URGENCY_ACCENT.LOW)
 
   return (
@@ -43,6 +61,7 @@ function TaskCard({ task, index, onClick }: { task: TaskSummary; index: number; 
       style={{
         '--card-accent': accentColor,
         '--delay': `${index * 50}ms`,
+        opacity: isPipeline ? 0.85 : 1,
       } as React.CSSProperties}
       onClick={onClick}
       role="button"
@@ -52,7 +71,15 @@ function TaskCard({ task, index, onClick }: { task: TaskSummary; index: number; 
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2 flex-wrap">
-          <UrgencyBadge urgency={task.urgency} />
+          {isPipeline ? (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-500 uppercase tracking-wide">
+              {/* Spinning dot */}
+              <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-pulse" />
+              {PIPELINE_STATUS_LABEL[task.status] ?? task.status}
+            </span>
+          ) : (
+            <UrgencyBadge urgency={task.urgency} />
+          )}
           {isEscalated && (
             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-700 uppercase tracking-wide">
               ⚠ Escalated
@@ -166,6 +193,7 @@ export function Dashboard() {
   }, [tasks])
 
   // Stats derived from task list
+  const reviewCount = tasks.filter(t => !PIPELINE_STATUSES.has(t.status)).length
   const highCount = tasks.filter(t => t.urgency === 'HIGH').length
   const dueToday = tasks.filter(t => {
     if (!t.response_due) return false
@@ -183,7 +211,11 @@ export function Dashboard() {
           <p className="text-sm text-teter-gray-text mt-0.5 font-medium">
             {loading
               ? 'Loading…'
-              : `${tasks.length} item${tasks.length !== 1 ? 's' : ''} pending review`}
+              : reviewCount > 0
+              ? `${reviewCount} item${reviewCount !== 1 ? 's' : ''} pending review${tasks.length > reviewCount ? `, ${tasks.length - reviewCount} in pipeline` : ''}`
+              : tasks.length > 0
+              ? `${tasks.length} item${tasks.length !== 1 ? 's' : ''} in pipeline`
+              : 'No active items'}
           </p>
         </div>
 
@@ -195,9 +227,15 @@ export function Dashboard() {
       {!loading && tasks.length > 0 && (
         <div className="flex gap-3 mb-5">
           <div className="stat-chip">
-            <span className="text-xl font-bold text-teter-ink leading-none">{tasks.length}</span>
-            <span className="text-[10px] uppercase tracking-widest text-teter-gray-text font-semibold mt-1.5">Pending</span>
+            <span className="text-xl font-bold text-teter-ink leading-none">{reviewCount}</span>
+            <span className="text-[10px] uppercase tracking-widest text-teter-gray-text font-semibold mt-1.5">For Review</span>
           </div>
+          {tasks.length > reviewCount && (
+            <div className="stat-chip">
+              <span className="text-xl font-bold text-gray-400 leading-none">{tasks.length - reviewCount}</span>
+              <span className="text-[10px] uppercase tracking-widest text-teter-gray-text font-semibold mt-1.5">In Pipeline</span>
+            </div>
+          )}
           <div className="stat-chip">
             <span className="text-xl font-bold text-urgency-high leading-none">{highCount}</span>
             <span className="text-[10px] uppercase tracking-widest text-teter-gray-text font-semibold mt-1.5">High</span>

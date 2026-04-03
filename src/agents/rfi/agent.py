@@ -93,8 +93,8 @@ class RFIAgent:
             self._set_error(db, task_id, str(e))
             return RFIProcessingResult(task_id=task_id, final_status="ERROR")
 
-        # Step 4: Knowledge Graph lookup
-        kg_result = self._kg_lookup(extraction, task_id)
+        # Step 4: Knowledge Graph lookup (spec sections + project-doc fallback)
+        kg_result = self._kg_lookup(extraction, task_id, project_id=project_id)
         self._save_thought_chain(db, task_id, "02_kg_queries", {
             "spec_sections_found": len(kg_result.spec_sections),
             "playbook_rules_found": len(kg_result.playbook_rules),
@@ -198,7 +198,7 @@ class RFIAgent:
             logger.error(f"[{task_id}] Error fetching ingest {ingest_id}: {e}")
             return None
 
-    def _kg_lookup(self, extraction, task_id: str) -> KGLookupResult:
+    def _kg_lookup(self, extraction, task_id: str, project_id: str = "") -> KGLookupResult:
         query = extraction.question
         if extraction.referenced_spec_sections:
             query += " " + " ".join(extraction.referenced_spec_sections)
@@ -208,6 +208,25 @@ class RFIAgent:
         except Exception as e:
             logger.warning(f"[{task_id}] KG spec search failed: {e}")
             spec_sections = []
+
+        # Fallback: if SpecSection nodes are sparse (doc-intel hasn't been run yet),
+        # search the full CADocument library so the AI still gets project context.
+        similar_project_docs: list = []
+        if len(spec_sections) < 3:
+            try:
+                similar_project_docs = self._kg.search_project_documents(
+                    query,
+                    project_id=project_id or None,
+                    doc_types=["RFI", "SUBMITTAL", "BULLETIN", "GENERAL"],
+                    top_k=5,
+                )
+                if similar_project_docs:
+                    logger.info(
+                        f"[{task_id}] Spec sections sparse ({len(spec_sections)}); "
+                        f"using {len(similar_project_docs)} similar project docs as fallback."
+                    )
+            except Exception as e:
+                logger.warning(f"[{task_id}] KG project-doc fallback search failed: {e}")
 
         try:
             playbook_rules = self._kg.get_agent_playbook(AGENT_ID)
@@ -225,6 +244,7 @@ class RFIAgent:
             spec_sections=spec_sections,
             playbook_rules=playbook_rules,
             workflow_steps=workflow_steps,
+            similar_project_docs=similar_project_docs,
         )
 
     def _assign_rfi_number(self, db, project_id: str) -> str:
