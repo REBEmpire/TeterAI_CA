@@ -9,16 +9,16 @@
     "start": "electron .",
     "build": "electron-builder",
     "dev": "concurrently \"npm run dev:api\" \"npm run dev:electron\"",
-    "dev:api": "cd ../../.. && DESKTOP_MODE=true PYTHONPATH=src uv run uvicorn ui.api.server:app --port 8000 --reload",
+    "dev:api": "cd ../../.. && cross-env DESKTOP_MODE=true PYTHONPATH=src uv run uvicorn ui.api.server:app --port 8000 --reload",
     "dev:electron": "electron .",
     "build:web": "cd ../web && npm run build:desktop",
     "pack": "electron-builder --dir"
   },
-  "dependencies": {},
   "devDependencies": {
+    "concurrently": "^9.0.0",
+    "cross-env": "^10.1.0",
     "electron": "^33.0.0",
-    "electron-builder": "^25.0.0",
-    "concurrently": "^9.0.0"
+    "electron-builder": "^25.0.0"
   },
   "build": {
     "appId": "com.teter.teterai-ca",
@@ -38,27 +38,44 @@
       {
         "from": "../web/dist",
         "to": "web-dist",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "../../../dist/teterai-backend",
         "to": "backend",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.productivity",
       "icon": "build-resources/icon.icns"
     },
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "icon": "build-resources/icon.ico",
       "requestedExecutionLevel": "asInvoker",
       "signAndEditExecutable": false
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "build-resources/icon.png",
       "category": "Office"
     },

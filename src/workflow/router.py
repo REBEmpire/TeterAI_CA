@@ -18,6 +18,71 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+class DispatchResult(BaseModel):
+    dispatched: int       # ingests classified by dispatcher
+    agents_run: int       # tool-agent tasks advanced
+    errors: list[str] = []
+
+
+@router.post("/dispatch", response_model=DispatchResult, tags=["workflow"])
+def dispatch_now():
+    """
+    On-demand: run the Dispatcher Agent + all tool agents once.
+    Moves tasks from PENDING_CLASSIFICATION → ASSIGNED_TO_AGENT → STAGED_FOR_REVIEW.
+    Safe to call repeatedly — each agent only picks up tasks assigned to it.
+    """
+    errors: list[str] = []
+    dispatched = 0
+    agents_run = 0
+
+    try:
+        from ai_engine.gcp import gcp_integration
+        from ai_engine.engine import engine as ai_engine
+        from agents.dispatcher.agent import DispatcherAgent
+
+        dispatcher = DispatcherAgent(gcp=gcp_integration, ai_engine=ai_engine)
+        task_ids = dispatcher.run()
+        dispatched = len(task_ids)
+        logger.info(f"[dispatch_now] dispatcher classified {dispatched} ingest(s)")
+    except Exception as e:
+        msg = f"Dispatcher error: {e}"
+        logger.error(msg)
+        errors.append(msg)
+
+    try:
+        from ai_engine.gcp import gcp_integration
+        from ai_engine.engine import engine as ai_engine
+        from knowledge_graph.client import kg_client
+        from agents.rfi.agent import RFIAgent
+        from agents.submittal.agent import SubmittalReviewAgent
+        from agents.cost.agent import CostAnalyzerAgent
+        from agents.payapp.agent import PayAppReviewAgent
+        from agents.schedule.agent import ScheduleReviewAgent
+
+        tool_agents = [
+            RFIAgent(gcp=gcp_integration, ai_engine=ai_engine, kg_client=kg_client),
+            SubmittalReviewAgent(gcp=gcp_integration, ai_engine=ai_engine, kg_client=kg_client),
+            CostAnalyzerAgent(gcp=gcp_integration, ai_engine=ai_engine),
+            PayAppReviewAgent(gcp=gcp_integration, ai_engine=ai_engine),
+            ScheduleReviewAgent(gcp=gcp_integration, ai_engine=ai_engine),
+        ]
+        for agent in tool_agents:
+            try:
+                processed = agent.run()
+                agents_run += len(processed)
+            except Exception as e:
+                msg = f"{agent.__class__.__name__} error: {e}"
+                logger.error(msg)
+                errors.append(msg)
+    except Exception as e:
+        msg = f"Tool agent init error: {e}"
+        logger.error(msg)
+        errors.append(msg)
+
+    return DispatchResult(dispatched=dispatched, agents_run=agents_run, errors=errors)
+
+
 def get_workflow_engine() -> WorkflowEngine:
     # Factory for DI
     gcp = GCPIntegration()

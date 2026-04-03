@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { approveTask, escalateTask, getTask, rejectTask } from '../api/client'
+import { approveTask, dispatchNow, escalateTask, getTask, rejectTask } from '../api/client'
 import { ConfidenceMeter } from '../components/common/ConfidenceMeter'
 import { UrgencyBadge } from '../components/common/UrgencyBadge'
 import { RejectionDialog } from '../components/modals/RejectionDialog'
@@ -9,6 +9,20 @@ import { RedTeamAuditPanel } from '../components/review/RedTeamAuditPanel'
 import type { RejectionReason, TaskDetail } from '../types'
 
 type RightTab = 'email' | `attachment_${number}` | `spec_${number}` | `drawing_${number}`
+
+const PIPELINE_STATUSES = new Set([
+  'PENDING_CLASSIFICATION',
+  'CLASSIFYING',
+  'ASSIGNED_TO_AGENT',
+  'PROCESSING',
+])
+
+const PIPELINE_STATUS_LABEL: Record<string, string> = {
+  PENDING_CLASSIFICATION: 'Queued — waiting for classification',
+  CLASSIFYING: 'Classifying document…',
+  ASSIGNED_TO_AGENT: 'Assigned to agent — processing will begin shortly',
+  PROCESSING: 'Agent is processing this document…',
+}
 
 export function SplitViewer() {
   const { taskId } = useParams<{ taskId: string }>()
@@ -33,6 +47,10 @@ export function SplitViewer() {
   const [acting, setActing] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [deliveredPath, setDeliveredPath] = useState<string | null>(null)
+
+  // Pipeline processing state
+  const [dispatching, setDispatching] = useState(false)
+  const [dispatchMsg, setDispatchMsg] = useState<string | null>(null)
 
   useEffect(() => {
     if (!taskId) return
@@ -79,6 +97,31 @@ export function SplitViewer() {
     } finally {
       setActing(false)
       setShowReject(false)
+    }
+  }
+
+  async function handleProcessNow() {
+    setDispatching(true)
+    setDispatchMsg(null)
+    try {
+      const result = await dispatchNow()
+      const msg = result.dispatched > 0 || result.agents_run > 0
+        ? `Processing started — ${result.dispatched} classified, ${result.agents_run} advanced`
+        : 'No pending items found. The task may already be processing.'
+      setDispatchMsg(msg)
+      // Refresh the task after a short delay to pick up the new status
+      setTimeout(() => {
+        if (!taskId) return
+        getTask(taskId).then((t) => {
+          setTask(t)
+          setDraftContent(t.draft_content ?? '')
+        }).catch(() => {/* ignore refresh errors */})
+        setDispatchMsg(null)
+      }, 2500)
+    } catch (e: unknown) {
+      setDispatchMsg(e instanceof Error ? e.message : 'Dispatch failed.')
+    } finally {
+      setDispatching(false)
     }
   }
 
@@ -359,6 +402,29 @@ export function SplitViewer() {
         </div>
       </div>
 
+      {/* ── Pipeline status banner (shown while task is still being processed) */}
+      {PIPELINE_STATUSES.has(task.status) && (
+        <div className="flex-shrink-0 bg-amber-50 border-t border-amber-200 px-4 py-2.5 flex items-center gap-3 text-sm">
+          {/* Animated dot */}
+          <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
+          <span className="text-amber-800 font-medium">
+            {PIPELINE_STATUS_LABEL[task.status] ?? task.status}
+          </span>
+          <div className="ml-auto flex items-center gap-3">
+            {dispatchMsg && (
+              <span className="text-amber-700 text-xs">{dispatchMsg}</span>
+            )}
+            <button
+              className="btn-outline text-xs border-amber-400 text-amber-700 hover:bg-amber-100"
+              onClick={handleProcessNow}
+              disabled={dispatching}
+            >
+              {dispatching ? 'Processing…' : 'Process Now'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ── Bottom action bar ─────────────────────────────────────── */}
       <div className="flex-shrink-0 bg-white border-t border-teter-gray-mid px-4 py-3 flex items-center gap-3">
         {actionError && (
@@ -368,7 +434,7 @@ export function SplitViewer() {
         <button
           className="btn-outline text-sm"
           onClick={() => setShowThoughtChain(true)}
-          disabled={acting}
+          disabled={acting || PIPELINE_STATUSES.has(task.status)}
         >
           Thought Chain
         </button>
@@ -377,21 +443,21 @@ export function SplitViewer() {
           <button
             className="btn-outline text-sm text-red-600 border-red-300 hover:bg-red-50"
             onClick={() => setShowReject(true)}
-            disabled={acting}
+            disabled={acting || PIPELINE_STATUSES.has(task.status)}
           >
             Reject
           </button>
           <button
             className="btn-outline text-sm"
             onClick={handleEscalate}
-            disabled={acting}
+            disabled={acting || PIPELINE_STATUSES.has(task.status)}
           >
             Escalate
           </button>
           <button
             className="btn-primary text-sm"
             onClick={handleApprove}
-            disabled={acting}
+            disabled={acting || PIPELINE_STATUSES.has(task.status)}
           >
             {acting ? 'Saving…' : isEditing ? 'Save & Approve' : 'Approve'}
           </button>

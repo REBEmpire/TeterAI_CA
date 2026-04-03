@@ -246,7 +246,7 @@ export function PreBidReviewView() {
                 const selected = selectedSources.includes(p.project_id)
                 return (
                   <button
-                    key={p.id}
+                    key={p.project_id}
                     type="button"
                     onClick={() => toggleSource(p.project_id)}
                     className={`flex items-center gap-2 px-3 py-2 rounded border text-sm text-left transition-colors

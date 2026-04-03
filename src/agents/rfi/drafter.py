@@ -59,6 +59,22 @@ def _format_playbook_rules(rules: list) -> str:
     return "\n".join(lines)
 
 
+def _format_similar_docs(docs: list) -> str:
+    """Format similar past project documents as reference context."""
+    if not docs:
+        return ""
+    lines = []
+    for d in docs[:5]:
+        doc_type = d.get("doc_type", "")
+        doc_num  = d.get("doc_number") or ""
+        filename = d.get("filename", "")
+        summary  = d.get("summary") or ""
+        proj     = d.get("project_number") or d.get("project_id", "")
+        label    = f"{doc_type} {doc_num}".strip() if doc_num else (filename or doc_type)
+        lines.append(f"  - [{proj}] {label}: {summary[:200]}")
+    return "\n".join(lines)
+
+
 class RFIDrafter(RedTeamMixin):
     def __init__(self, ai_engine: AIEngine):
         self._engine = ai_engine
@@ -75,6 +91,18 @@ class RFIDrafter(RedTeamMixin):
         today = date.today().isoformat()
         spec_sections_str = _format_spec_sections(kg_result.spec_sections)
         playbook_str = _format_playbook_rules(kg_result.playbook_rules)
+        similar_docs_str = _format_similar_docs(kg_result.similar_project_docs)
+
+        # Build the project-context block: prefer spec sections; fall back to similar docs
+        if kg_result.spec_sections:
+            kg_context_block = f"SPEC SECTIONS FROM KNOWLEDGE GRAPH:\n{spec_sections_str}"
+        elif similar_docs_str:
+            kg_context_block = (
+                f"SPEC SECTIONS FROM KNOWLEDGE GRAPH:\nNone found — spec library not yet indexed.\n\n"
+                f"SIMILAR PROJECT DOCUMENTS (from ingested library):\n{similar_docs_str}"
+            )
+        else:
+            kg_context_block = "SPEC SECTIONS FROM KNOWLEDGE GRAPH:\nNone found in knowledge graph."
 
         user_prompt = (
             f"PROJECT: {project_id}{' — ' + project_name if project_name else ''}\n"
@@ -88,7 +116,7 @@ class RFIDrafter(RedTeamMixin):
             f"{', '.join(extraction.referenced_spec_sections) or 'None'}\n"
             f"REFERENCED DRAWING SHEETS (from contractor): "
             f"{', '.join(extraction.referenced_drawing_sheets) or 'None'}\n\n"
-            f"SPEC SECTIONS FROM KNOWLEDGE GRAPH:\n{spec_sections_str}\n\n"
+            f"{kg_context_block}\n\n"
             f"PLAYBOOK GUIDANCE:\n{playbook_str}\n\n"
             "Draft a professional response addressing the contractor's question."
         )

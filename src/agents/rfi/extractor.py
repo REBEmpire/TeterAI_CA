@@ -36,7 +36,14 @@ class RFIExtractor:
         sender_email = ingest.get("sender_email", "")
         body_text = ingest.get("body_text") or ""
         attachment_paths = ingest.get("attachment_drive_paths") or []
-        attachment_names = [p.split("/")[-1] for p in attachment_paths] if attachment_paths else []
+        if attachment_paths:
+            attachment_names = [p.split("/")[-1] for p in attachment_paths]
+        else:
+            attachment_names = [
+                m.get("filename", "")
+                for m in (ingest.get("attachment_metadata") or [])
+                if m.get("filename")
+            ]
         attachments_str = ", ".join(attachment_names) if attachment_names else "none"
 
         user_prompt = (

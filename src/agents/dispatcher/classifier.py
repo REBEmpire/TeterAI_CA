@@ -48,12 +48,21 @@ class EmailClassifier:
         sender_email = ingest.get("sender_email", "")
         body_text = ingest.get("body_text") or ""
         subject_hints = ingest.get("subject_hints") or {}
+
+        # Prefer Drive paths (cloud mode); fall back to attachment_metadata filenames (desktop/upload mode)
         attachment_paths = ingest.get("attachment_drive_paths") or []
+        if attachment_paths:
+            attachment_names = [p.split("/")[-1] for p in attachment_paths]
+        else:
+            attachment_names = [
+                m.get("filename", "")
+                for m in (ingest.get("attachment_metadata") or [])
+                if m.get("filename")
+            ]
 
         if not body_text:
-            logger.warning(f"[{ingest_id}] Empty body_text — classifying from subject only.")
+            logger.warning(f"[{ingest_id}] Empty body_text — classifying from subject/filename only.")
 
-        attachment_names = [p.split("/")[-1] for p in attachment_paths] if attachment_paths else []
         attachments_str = ", ".join(attachment_names) if attachment_names else "none"
 
         user_prompt = (

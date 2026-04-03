@@ -74,7 +74,11 @@ CREATE TABLE IF NOT EXISTS email_ingests (
     status TEXT DEFAULT 'PENDING_CLASSIFICATION',
     task_id TEXT,
     created_at TEXT,
-    source TEXT DEFAULT 'manual'
+    source TEXT DEFAULT 'manual',
+    project_id TEXT,
+    project_number TEXT,
+    tool_type_hint TEXT,
+    uploaded_by TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_ingests_status ON email_ingests(status);
@@ -192,7 +196,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS processed_emails (
     message_id TEXT PRIMARY KEY,
     processed_at TEXT,
-    task_id TEXT
+    task_id TEXT,
+    local_path TEXT
 );
 
 -- ---------------------------------------------------------------------------

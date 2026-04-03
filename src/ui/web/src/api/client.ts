@@ -117,6 +117,21 @@ export async function escalateTask(taskId: string, notes?: string): Promise<void
 }
 
 // ---------------------------------------------------------------------------
+// Workflow
+// ---------------------------------------------------------------------------
+
+export interface DispatchResult {
+  dispatched: number
+  agents_run: number
+  errors: string[]
+}
+
+/** Trigger an on-demand dispatch run: classifier + all tool agents. */
+export async function dispatchNow(): Promise<DispatchResult> {
+  return request<DispatchResult>('POST', '/workflow/dispatch')
+}
+
+// ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
 
