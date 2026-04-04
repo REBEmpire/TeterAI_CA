@@ -5,6 +5,7 @@
  * status feedback. Matches the Teter brand palette (dark #313131, orange #d06f1a).
  */
 import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Link } from 'react-router-dom'
 import { listProjects, uploadDocument } from '../../api/client'
 import type { ProjectSummary } from '../../types'
@@ -14,12 +15,12 @@ import type { ProjectSummary } from '../../types'
 // ---------------------------------------------------------------------------
 
 const TOOL_TYPE_OPTIONS: { value: string; label: string }[] = [
-  { value: 'auto',      label: 'Auto-detect from filename' },
-  { value: 'rfi',       label: 'RFI Analyzer' },
-  { value: 'submittal', label: 'Submittal Reviewer' },
-  { value: 'cost',      label: 'Cost Analyzer' },
-  { value: 'payapp',    label: 'Pay App Review' },
-  { value: 'schedule',  label: 'Schedule Review' },
+  { value: 'auto',      label: 'Let the AI decide' },
+  { value: 'rfi',       label: 'Request for Information (RFI)' },
+  { value: 'submittal', label: 'Submittal' },
+  { value: 'cost',      label: 'Cost Analysis / PCO' },
+  { value: 'payapp',    label: 'Pay Application' },
+  { value: 'schedule',  label: 'Schedule' },
 ]
 
 const ACCEPTED_EXTS = '.pdf,.docx,.xer,.xml'
@@ -156,7 +157,15 @@ interface UploadResult {
 // ---------------------------------------------------------------------------
 
 export function DocumentUploadPanel() {
+  const navigate = useNavigate()
   const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [projectSearch, setProjectSearch] = useState('')
+  const [showProjectDropdown, setShowProjectDropdown] = useState(false)
+
+  useEffect(() => {
+    listProjects().then(setProjects).catch(() => {})
+  }, [])
+
   const [projectId, setProjectId] = useState('')
   const [toolType, setToolType] = useState('auto')
   const [primaryFiles, setPrimaryFiles] = useState<File[]>([])

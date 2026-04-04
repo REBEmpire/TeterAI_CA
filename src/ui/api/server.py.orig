@@ -35,20 +35,7 @@ try:
 except Exception as _lc_err:
     logger.warning(f"LocalConfig not loaded: {_lc_err}")
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from datetime import datetime, timezone
-
-# Global scheduler for desktop background tasks
-scheduler = BackgroundScheduler()
-
-# Global state for health reporting
-system_health_state = {
-    "last_poll_at": None,
-}
-
 from fastapi import FastAPI
-
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
