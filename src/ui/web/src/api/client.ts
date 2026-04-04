@@ -677,3 +677,9 @@ export async function addDivergenceNotes(
     action_items: actionItems ?? [],
   })
 }
+export const apiClient = {
+  getSettings: () => request<any>('GET', '/settings'),
+  post: (path: string, data: any) => request<any>('POST', path, data),
+  getHealth: () => request<any>('GET', '/health'),
+  retryTask: (taskId: string) => request<any>('POST', `/tasks/${taskId}/retry`)
+}

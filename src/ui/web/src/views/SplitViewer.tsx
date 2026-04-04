@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { approveTask, dispatchNow, escalateTask, getTask, rejectTask } from '../api/client'
 import { ConfidenceMeter } from '../components/common/ConfidenceMeter'
 import { UrgencyBadge } from '../components/common/UrgencyBadge'
+import { STATUS_LABELS, DOC_TYPE_LABELS } from '../constants/statusLabels'
 import { RejectionDialog } from '../components/modals/RejectionDialog'
 import { ThoughtChainModal } from '../components/modals/ThoughtChainModal'
 import { RedTeamAuditPanel } from '../components/review/RedTeamAuditPanel'
@@ -408,7 +409,7 @@ export function SplitViewer() {
           {/* Animated dot */}
           <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse shrink-0" />
           <span className="text-amber-800 font-medium">
-            {PIPELINE_STATUS_LABEL[task.status] ?? task.status}
+            {STATUS_LABELS[task.status] || task.status}
           </span>
           <div className="ml-auto flex items-center gap-3">
             {dispatchMsg && (
