@@ -41,6 +41,9 @@ class LocalConfig:
     supabase_url: str = ""
     supabase_api_key: str = ""
 
+    # GitHub (for automated PR creation via gh CLI)
+    github_token: str = ""
+
     # Storage paths
     projects_root: str = DEFAULT_PROJECTS_ROOT
     db_path: str = DEFAULT_DB_PATH
@@ -102,6 +105,7 @@ class LocalConfig:
             "neo4j_password": "NEO4J_PASSWORD",
             "supabase_url": "SUPABASE_URL",
             "supabase_api_key": "SB_API_KEY",
+            "github_token": "GITHUB_TOKEN",
         }
         for attr, env_var in mapping.items():
             val = getattr(self, attr, "")
