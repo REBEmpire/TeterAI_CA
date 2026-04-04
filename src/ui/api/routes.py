@@ -3016,8 +3016,23 @@ def _extract_upload_text(content: bytes, filename: str, max_chars: int = 8000) -
             script = (
                 "import pypdf, io, sys\n"
                 "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n"
-                f"r = pypdf.PdfReader(open({repr(tmp)}, 'rb'))\n"
-                "print('\\n'.join(p.extract_text() or '' for p in r.pages))\n"
+                "try:\n"
+                f"    r = pypdf.PdfReader(open({repr(tmp)}, 'rb'))\n"
+                "    if r.is_encrypted:\n"
+                "        try:\n"
+                "            r.decrypt('')\n"
+                "        except:\n"
+                "            pass\n"
+                "    text = []\n"
+                "    for p in r.pages:\n"
+                "        try:\n"
+                "            t = p.extract_text()\n"
+                "            if t: text.append(t)\n"
+                "        except:\n"
+                "            pass\n"
+                "    print('\\n'.join(text))\n"
+                "except Exception as e:\n"
+                "    print(f'ERROR: {e}', file=sys.stderr)\n"
             )
             proc = subprocess.run(
                 [sys.executable, "-c", script],
@@ -3195,6 +3210,14 @@ async def upload_document(
         *supporting_metadata,
     ]
 
+    # Smart bypass: if user explicitly selected project AND tool type (not auto)
+    # we jump straight to ASSIGNED_TO_AGENT status to bypass the AI classifier dispatcher.
+    has_explicit_project = bool(project_id)
+    has_explicit_tool = bool(tool_type and tool_type not in ("auto", ""))
+    bypass_classification = has_explicit_project and has_explicit_tool
+
+    initial_status = "ASSIGNED_TO_AGENT" if bypass_classification else "PENDING_CLASSIFICATION"
+
     ingest_record = {
         "ingest_id": ingest_id,
         "message_id": ingest_id,
@@ -3209,7 +3232,7 @@ async def upload_document(
             "doc_type_hint": resolved_tool_type.upper(),
             "project_number_hint": project_number,
         },
-        "status": "PENDING_CLASSIFICATION",
+        "status": initial_status,
         "task_id": task_id,
         "created_at": now,
         # Distinguishes manual uploads from folder_watch and email ingests
@@ -3236,18 +3259,18 @@ async def upload_document(
     task_doc = {
         "task_id": task_id,
         "ingest_id": ingest_id,
-        "status": "PENDING_CLASSIFICATION",
+        "status": initial_status,
         "assigned_agent": None,
         "assigned_reviewer": None,
         "created_at": now,
         "updated_at": now,
         "status_history": [{
             "from_status": None,
-            "to_status": "PENDING_CLASSIFICATION",
+            "to_status": initial_status,
             "triggered_by": current_user.uid,
             "trigger_type": "HUMAN",
             "timestamp": now,
-            "notes": "Manual upload",
+            "notes": f"Manual upload{' (bypassed classification)' if bypass_classification else ''}",
         }],
         "project_id": resolved_project_id,
         "project_number": project_number,
@@ -3287,7 +3310,10 @@ async def upload_document(
 
     # Kick off an immediate dispatcher run so the task doesn't sit in
     # PENDING_CLASSIFICATION until the next background poll cycle.
+    # Only do this if we actually need classification!
     def _dispatch_now() -> None:
+        if bypass_classification:
+            return
         try:
             from ai_engine.gcp import gcp_integration as _gcp
             from ai_engine.engine import engine as _ai_engine
@@ -3306,3 +3332,53 @@ async def upload_document(
         "tool_type": resolved_tool_type,
         "status": "queued",
     }
+
+
+@router.post("/admin/force-stuck-records")
+async def force_stuck_records(current_user: Annotated[UserInfo, Depends(require_auth)]):
+    """
+    Diagnostic endpoint to find stuck PENDING_CLASSIFICATION or CLASSIFYING records
+    and kick off the dispatcher again, or reset them.
+    """
+    if current_user.role not in ("ADMIN", "REVIEWER"):
+        raise HTTPException(status_code=403, detail="Not authorized")
+
+    db = _db()
+    if not db:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    # Reset CLASSIFYING -> PENDING_CLASSIFICATION
+    ingests_ref = db.collection("email_ingests")
+    stuck_ingests = ingests_ref.where("status", "in", ["CLASSIFYING", "PENDING_CLASSIFICATION", "ERROR"]).stream()
+
+    count = 0
+    for doc in stuck_ingests:
+        try:
+            doc.reference.update({"status": "PENDING_CLASSIFICATION"})
+            count += 1
+        except Exception as e:
+            logger.warning(f"Failed to reset ingest {doc.id}: {e}")
+
+    # Try to reset task status as well
+    tasks_ref = db.collection("tasks")
+    stuck_tasks = tasks_ref.where("status", "in", ["CLASSIFYING", "PENDING_CLASSIFICATION", "ERROR"]).stream()
+    for doc in stuck_tasks:
+        try:
+            doc.reference.update({"status": "PENDING_CLASSIFICATION"})
+        except Exception as e:
+            logger.warning(f"Failed to reset task {doc.id}: {e}")
+
+    # Kick off dispatcher
+    def _run_dispatcher_bg():
+        try:
+            from agents.dispatcher.agent import DispatcherAgent
+            from ai_engine.gcp import gcp_integration
+            from ai_engine.engine import engine
+            DispatcherAgent(gcp=gcp_integration, ai_engine=engine).run()
+        except Exception as e:
+            logger.error(f"Failed to run dispatcher from diagnostic endpoint: {e}")
+
+    import threading
+    threading.Thread(target=_run_dispatcher_bg, daemon=True).start()
+
+    return {"status": "success", "reset_count": count, "message": "Dispatcher triggered for stuck records."}

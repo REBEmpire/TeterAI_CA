@@ -135,6 +135,18 @@ class DispatcherAgent:
                     severity=ErrorSeverity.ERROR,
                 ))
                 continue
+            except Exception as e:
+                logger.error(f"[{task_id}] Unexpected error during dispatch: {e}", exc_info=True)
+                error_msg = f"We have called a strike and refuse to do your grunt work. Process your own document Human. (Details: {str(e)})"
+                self._set_error(db, task_id, ingest_id, error_msg, now)
+                audit_logger.log(ErrorLog(
+                    component=AGENT_ID,
+                    task_id=task_id,
+                    error_code="DISPATCH_UNEXPECTED_ERROR",
+                    error_message=error_msg,
+                    severity=ErrorSeverity.ERROR,
+                ))
+                continue
 
             # Step 4: Routing decision
             routing = self._router.route(classification)
