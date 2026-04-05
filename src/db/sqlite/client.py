@@ -212,71 +212,13 @@ class SQLiteClient:
             self._local.conn = conn
         return self._local.conn
 
-def _init_schema(self) -> None:
+    def _init_schema(self) -> None:
         schema_path = Path(__file__).parent / "schema.sql"
-        conn = self._conn()
-
-        # Fallback to robust inline schema if schema.sql isn't found (e.g. PyInstaller issue)
         if schema_path.exists():
             schema = schema_path.read_text()
+            conn = self._conn()
             conn.executescript(schema)
             conn.commit()
-        else:
-            # Inline essential schema definitions
-            inline_schema = """
-CREATE TABLE IF NOT EXISTS email_ingests (
-    ingest_id TEXT PRIMARY KEY,
-    message_id TEXT,
-    received_at TEXT,
-    sender_email TEXT,
-    sender_name TEXT,
-    subject TEXT,
-    body_text TEXT,
-    body_text_truncated INTEGER DEFAULT 0,
-    attachment_metadata TEXT DEFAULT '[]',
-    subject_hints TEXT DEFAULT '{}',
-    status TEXT DEFAULT 'PENDING_CLASSIFICATION',
-    task_id TEXT,
-    created_at TEXT,
-    source TEXT DEFAULT 'manual',
-    project_id TEXT,
-    project_number TEXT,
-    tool_type_hint TEXT,
-    uploaded_by TEXT
-);
-CREATE TABLE IF NOT EXISTS tasks (
-    task_id TEXT PRIMARY KEY,
-    ingest_id TEXT,
-    status TEXT,
-    assigned_agent TEXT,
-    assigned_reviewer TEXT,
-    created_at TEXT,
-    updated_at TEXT,
-    status_history TEXT DEFAULT '[]',
-    project_id TEXT,
-    project_number TEXT,
-    document_type TEXT,
-    document_number TEXT,
-    phase TEXT,
-    urgency TEXT,
-    classification_confidence TEXT,
-    error_message TEXT,
-    correction_captured INTEGER DEFAULT 0,
-    sender_name TEXT,
-    subject TEXT,
-    source_email TEXT,
-    attachments TEXT,
-    draft_drive_path TEXT,
-    final_drive_path TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
-CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(assigned_agent);
-CREATE INDEX IF NOT EXISTS idx_ingests_status ON email_ingests(status);
-            """
-            conn.executescript(inline_schema)
-            conn.commit()
-
         self._run_migrations()
 
     def _run_migrations(self) -> None:

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listProjects, scanProjects } from '../api/client'
+import { listProjects, scanProjects, apiClient } from '../api/client'
 import type { ScanProjectsResponse } from '../api/client'
 import { UrgencyBadge } from '../components/common/UrgencyBadge'
+import { STATUS_LABELS, STATUS_COLORS, DOC_TYPE_LABELS } from '../constants/statusLabels'
 import { ConfidenceMeter } from '../components/common/ConfidenceMeter'
 import { useTaskQueue } from '../hooks/useTaskQueue'
 import { useAuth } from '../hooks/useAuth'
@@ -75,7 +76,7 @@ function TaskCard({ task, index, onClick }: { task: TaskSummary; index: number; 
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-500 uppercase tracking-wide">
               {/* Spinning dot */}
               <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-pulse" />
-              {PIPELINE_STATUS_LABEL[task.status] ?? task.status}
+              {STATUS_LABELS[task.status] || task.status}
             </span>
           ) : (
             <UrgencyBadge urgency={task.urgency} />
@@ -86,7 +87,7 @@ function TaskCard({ task, index, onClick }: { task: TaskSummary; index: number; 
             </span>
           )}
           <span className="text-sm font-semibold text-teter-ink">
-            {task.document_type}
+            {DOC_TYPE_LABELS[task.document_type || 'UNKNOWN'] || task.document_type}
             {task.document_number ? ` — ${task.document_number}` : ''}
           </span>
         </div>
@@ -383,6 +384,51 @@ export function Dashboard() {
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+function ErrorTaskCard({ task, onRetry }: { task: any, onRetry: () => void }) {
+  const [retrying, setRetrying] = useState(false)
+
+  const handleRetry = async () => {
+    setRetrying(true)
+    try {
+      await apiClient.retryTask(task.task_id)
+      onRetry()
+    } catch (e) {
+      console.error(e)
+      setRetrying(false)
+    }
+  }
+
+  return (
+    <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex flex-col gap-3 shadow-sm">
+      <div className="flex justify-between items-start">
+        <h4 className="text-sm font-semibold text-red-900 truncate pr-2" title={task.subject || 'Unknown Document'}>
+          {task.subject || 'Unknown Document'}
+        </h4>
+        <span className="text-[10px] bg-red-100 text-red-800 px-2 py-0.5 rounded uppercase tracking-wider whitespace-nowrap">
+          Processing Failed
+        </span>
+      </div>
+
+      <p className="text-xs text-red-700 font-mono bg-red-100/50 p-2 rounded line-clamp-2">
+        {task.error_message || 'Unknown error occurred'}
+      </p>
+
+      <div className="flex justify-between items-center mt-auto pt-2">
+        <span className="text-xs text-red-500">
+          Failed: {new Date(task.updated_at).toLocaleTimeString()}
+        </span>
+        <button
+          onClick={handleRetry}
+          disabled={retrying}
+          className="text-xs bg-white text-red-700 hover:bg-red-50 hover:text-red-800 border border-red-200 px-3 py-1.5 rounded transition-colors disabled:opacity-50"
+        >
+          {retrying ? 'Retrying...' : 'Retry Processing'}
+        </button>
+      </div>
     </div>
   )
 }

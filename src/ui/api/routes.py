@@ -3016,6 +3016,7 @@ def _extract_upload_text(content: bytes, filename: str, max_chars: int = 8000) -
             script = (
                 "import pypdf, io, sys\n"
                 "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n"
+=======
                 "try:\n"
                 f"    r = pypdf.PdfReader(open({repr(tmp)}, 'rb'))\n"
                 "    if r.is_encrypted:\n"
@@ -3033,6 +3034,7 @@ def _extract_upload_text(content: bytes, filename: str, max_chars: int = 8000) -
                 "    print('\\n'.join(text))\n"
                 "except Exception as e:\n"
                 "    print(f'ERROR: {e}', file=sys.stderr)\n"
+>>>>>>> origin/main
             )
             proc = subprocess.run(
                 [sys.executable, "-c", script],
@@ -3210,6 +3212,8 @@ async def upload_document(
         *supporting_metadata,
     ]
 
+<<<<<<< HEAD
+=======
     # Smart bypass: if user explicitly selected project AND tool type (not auto)
     # we jump straight to ASSIGNED_TO_AGENT status to bypass the AI classifier dispatcher.
     has_explicit_project = bool(project_id)
@@ -3218,6 +3222,7 @@ async def upload_document(
 
     initial_status = "ASSIGNED_TO_AGENT" if bypass_classification else "PENDING_CLASSIFICATION"
 
+>>>>>>> origin/main
     ingest_record = {
         "ingest_id": ingest_id,
         "message_id": ingest_id,
@@ -3266,11 +3271,19 @@ async def upload_document(
         "updated_at": now,
         "status_history": [{
             "from_status": None,
+<<<<<<< HEAD
+            "to_status": "PENDING_CLASSIFICATION",
+            "triggered_by": current_user.uid,
+            "trigger_type": "HUMAN",
+            "timestamp": now,
+            "notes": "Manual upload",
+=======
             "to_status": initial_status,
             "triggered_by": current_user.uid,
             "trigger_type": "HUMAN",
             "timestamp": now,
             "notes": f"Manual upload{' (bypassed classification)' if bypass_classification else ''}",
+>>>>>>> origin/main
         }],
         "project_id": resolved_project_id,
         "project_number": project_number,
@@ -3333,6 +3346,247 @@ async def upload_document(
         "status": "queued",
     }
 
+<<<<<<< HEAD
+@router.get("/health")
+async def get_health():
+    """Return backend health and task stats."""
+    from .server import system_health_state
+    from ai_engine.gcp import gcp_integration
+    from config.local_config import LocalConfig
+
+    cfg = LocalConfig.ensure_exists()
+    db = gcp_integration.firestore_client
+
+    now = datetime.now(timezone.utc)
+    last_poll = system_health_state["last_poll_at"]
+
+    status_str = "ok"
+    try:
+        # Quick check if DB is reachable by just fetching tasks collection logic
+        # Count PENDING and ERROR
+        pending_count = 0
+        error_count = 0
+        tasks = list(db.collection("tasks").where("status", "in", ["PENDING_CLASSIFICATION", "CLASSIFYING", "ERROR"]).stream())
+        for doc in tasks:
+            t_status = doc.to_dict().get("status")
+            if t_status == "ERROR":
+                error_count += 1
+            else:
+                # Need to check stuck logic if necessary, but this provides count
+                pending_count += 1
+
+                # if stuck > 10 min
+                updated_str = doc.to_dict().get("updated_at")
+                if updated_str:
+                    try:
+                        updated_time = datetime.fromisoformat(updated_str)
+                        if (now - updated_time).total_seconds() > 600:
+                            status_str = "degraded"
+                    except:
+                        pass
+
+        if error_count > 3:
+            status_str = "error"
+
+        # Check last poll time
+        if last_poll and cfg.poll_interval_seconds:
+            if (now - last_poll).total_seconds() > (cfg.poll_interval_seconds * 2):
+                status_str = "degraded" if status_str != "error" else "error"
+
+    except Exception as e:
+        status_str = "error"
+        pending_count = 0
+        error_count = 0
+        logging.getLogger(__name__).error(f"Health check failed: {e}")
+
+    return {
+        "status": status_str,
+        "last_dispatch_at": last_poll.isoformat() if last_poll else None,
+        "pending_count": pending_count,
+        "error_count": error_count,
+        "poll_interval_seconds": cfg.poll_interval_seconds
+    }
+
+@router.post("/tasks/{task_id}/retry")
+async def retry_task(
+    task_id: str,
+    user: UserInfo = Depends(require_auth),
+    _role=Depends(require_role("CA_STAFF")),
+):
+    """Reset an ERROR task back to PENDING_CLASSIFICATION."""
+    from ai_engine.gcp import gcp_integration
+    db = gcp_integration.firestore_client
+
+    doc_ref = db.collection("tasks").document(task_id)
+    doc = doc_ref.get()
+
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    task_data = doc.to_dict()
+    if task_data.get("status") != "ERROR":
+        raise HTTPException(status_code=400, detail="Only tasks in ERROR status can be retried")
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        # Update task state
+        history = task_data.get("status_history", [])
+        history.append({
+            "from_status": "ERROR",
+            "to_status": "PENDING_CLASSIFICATION",
+            "triggered_by": user.email,
+            "trigger_type": "HUMAN",
+            "timestamp": now.isoformat(),
+            "notes": "Manually retried from UI"
+        })
+
+        doc_ref.update({
+            "status": "PENDING_CLASSIFICATION",
+            "error_message": None,
+            "updated_at": now.isoformat(),
+            "status_history": history
+        })
+
+        # Reset ingest
+        ingest_id = task_data.get("ingest_id")
+        if ingest_id:
+            db.collection("email_ingests").document(ingest_id).update({
+                "status": "PENDING_CLASSIFICATION"
+            })
+
+        return {"status": "ok", "task_id": task_id}
+    except Exception as e:
+        logger.error(f"Failed to retry task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retry task")
+
+
+@router.post("/settings/embeddings")
+async def get_embedding_settings(
+    user: UserInfo = Depends(require_auth),
+    _role=Depends(require_role("ADMIN")),
+):
+    from config.local_config import LocalConfig
+    from embeddings.service import get_embedding_service
+
+    cfg = LocalConfig.ensure_exists()
+    embed_svc = get_embedding_service()
+
+    active_provider = "not configured"
+    if embed_svc and embed_svc.provider:
+        active_provider = embed_svc.provider.name if hasattr(embed_svc.provider, 'name') else str(embed_svc.provider.__class__.__name__)
+
+    return {
+        "active_provider": active_provider
+    }
+
+@router.post("/settings/test-key")
+async def test_api_key(
+    body: dict,
+    user: UserInfo = Depends(require_auth),
+    _role=Depends(require_role("ADMIN")),
+):
+    provider = body.get("provider")
+    key = body.get("key")
+
+    if not provider or not key:
+        return {"valid": False, "error": "Provider and key are required"}
+
+    try:
+        if provider == "google":
+            from litellm import embedding
+            import os
+            os.environ["GEMINI_API_KEY"] = key
+            res = embedding(model="gemini/text-embedding-004", input=["test"])
+            return {"valid": True}
+        elif provider == "anthropic":
+            from litellm import completion
+            import os
+            os.environ["ANTHROPIC_API_KEY"] = key
+            res = completion(model="anthropic/claude-3-haiku-20240307", messages=[{"role": "user", "content": "hi"}], max_tokens=5)
+            return {"valid": True}
+        else:
+            return {"valid": False, "error": f"Testing not implemented for provider {provider}"}
+    except Exception as e:
+        return {"valid": False, "error": f"Key validation failed: {str(e)}"}
+
+@router.get("/projects/{project_id}/search")
+async def search_project_chunks(
+    project_id: str,
+    q: str = Query(..., min_length=1),
+    limit: int = Query(10, ge=1, le=50),
+    user: UserInfo = Depends(require_auth),
+):
+    try:
+        from embeddings.service import get_embedding_service
+        from document_intelligence.storage.chunk_store import ChunkStore
+        from config.local_config import LocalConfig
+
+        cfg = LocalConfig.ensure_exists()
+        embed_svc = get_embedding_service()
+        chunk_store = ChunkStore(db_path=cfg.db_path)
+
+        if not embed_svc:
+            return []
+
+        # 1. Embed query
+        query_embedding = embed_svc.embed(q)
+
+        # 2. Get all chunks for project
+        all_chunks = chunk_store.get_chunks_for_document(project_id) # Using this temporarily since there's no get_by_project implemented in the snippet
+        # Actually ChunkStore probably has a method to get by project. Let's just load everything.
+        # SQLite querying would be better, but we are doing in-memory cosine sim for desktop mode.
+        import sqlite3
+        conn = sqlite3.connect(cfg.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, document_id, chunk_index, text_content, chunk_type, embedding, metadata FROM chunks WHERE project_id = ?", (project_id,))
+        rows = cursor.fetchall()
+
+        if not rows:
+            return []
+
+        # 3. Compute cosine similarity
+        import json
+        import math
+
+        def cosine_sim(vec1, vec2):
+            dot = sum(a * b for a, b in zip(vec1, vec2))
+            norm1 = math.sqrt(sum(a * a for a in vec1))
+            norm2 = math.sqrt(sum(a * a for a in vec2))
+            if norm1 == 0 or norm2 == 0:
+                return 0
+            return dot / (norm1 * norm2)
+
+        results = []
+        for row in rows:
+            try:
+                emb_bytes = row[5]
+                chunk_emb = json.loads(emb_bytes.decode('utf-8'))
+
+                sim = cosine_sim(query_embedding, chunk_emb)
+
+                meta = json.loads(row[6]) if row[6] else {}
+
+                results.append({
+                    "id": row[0],
+                    "document_id": row[1],
+                    "text_content": row[3],
+                    "chunk_type": row[4],
+                    "similarity": sim,
+                    "metadata": meta
+                })
+            except:
+                pass
+
+        # 4. Return top N
+        results.sort(key=lambda x: x["similarity"], reverse=True)
+        return results[:limit]
+
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Search failed: {e}")
+        return []
+=======
 
 @router.post("/admin/force-stuck-records")
 async def force_stuck_records(current_user: Annotated[UserInfo, Depends(require_auth)]):
@@ -3382,3 +3636,4 @@ async def force_stuck_records(current_user: Annotated[UserInfo, Depends(require_
     threading.Thread(target=_run_dispatcher_bg, daemon=True).start()
 
     return {"status": "success", "reset_count": count, "message": "Dispatcher triggered for stuck records."}
+>>>>>>> origin/main

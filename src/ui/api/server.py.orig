@@ -35,18 +35,6 @@ try:
 except Exception as _lc_err:
     logger.warning(f"LocalConfig not loaded: {_lc_err}")
 
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.interval import IntervalTrigger
-from datetime import datetime, timezone
-
-# Global scheduler for desktop background tasks
-scheduler = BackgroundScheduler()
-
-# Global state for health reporting
-system_health_state = {
-    "last_poll_at": None,
-}
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -156,93 +144,13 @@ def _run_tool_agents() -> None:
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     if _DESKTOP_MODE:
-        # 1. Initialize schema fully
-        try:
-            from config.local_config import LocalConfig
-            cfg = LocalConfig.ensure_exists()
-            # Push config to env so agents load it properly
-            cfg.push_to_env()
-
-            from db.sqlite.client import SQLiteClient
-            from pathlib import Path
-            import os
-
-            db_path = str(Path(cfg.db_path).expanduser())
-            os.makedirs(os.path.dirname(db_path), exist_ok=True)
-            # init_schema is automatically called in __init__
-            client = SQLiteClient(db_path)
-            logger.info(f"SQLite schema initialized at {db_path}")
-        except Exception as e:
-            logger.error(f"Failed to initialize SQLite schema: {e}")
-
-        # 2. Start APScheduler for background tasks
-        try:
-            from apscheduler.schedulers.background import BackgroundScheduler
-            from apscheduler.triggers.interval import IntervalTrigger
-
-            scheduler = BackgroundScheduler()
-
-            # Start jobs. Note we aren't using the while True loop functions directly
-            # but we can wrap the inner poll logic or just run the existing functions
-            # as threads inside the scheduler, but it's better to just use threads via ThreadPoolExecutor
-            # or keep daemon threads but monitor them. Wait, if we use APScheduler, we should
-            # call the poll functions directly. But _run_inbox_watcher has a while True loop inside it.
-            # So let's write adapter functions.
-            from config.local_config import LocalConfig
-            cfg = LocalConfig.ensure_exists()
-            interval = cfg.poll_interval_seconds
-
-            def poll_inbox():
-                try:
-                    from integrations.local_inbox.watcher import LocalInboxWatcher
-                    from ai_engine.gcp import gcp_integration
-                    db = gcp_integration.firestore_client
-                    watcher = LocalInboxWatcher(cfg, db)
-                    watcher.poll()
-                except Exception as e:
-                    logger.error(f"Inbox poll error: {e}")
-
-            def poll_dispatch():
-                try:
-                    from agents.dispatcher.agent import DispatcherAgent
-                    from ai_engine.gcp import gcp_integration
-                    from ai_engine.engine import engine
-                    DispatcherAgent(gcp=gcp_integration, ai_engine=engine).run()
-                except Exception as e:
-                    logger.error(f"Dispatch poll error: {e}")
-
-            def poll_agents():
-                try:
-                    from ai_engine.gcp import gcp_integration
-                    from ai_engine.engine import engine
-                    from agents.rfi.agent import RFIAgent
-                    from agents.submittal.agent import SubmittalAgent
-
-                    db = gcp_integration.firestore_client
-                    for agent_class in [RFIAgent, SubmittalAgent]:
-                        try:
-                            agent = agent_class(gcp=gcp_integration, ai_engine=engine)
-                            agent.run()
-                        except Exception as e:
-                            logger.error(f"{agent_class.__name__} run error: {e}")
-                except Exception as e:
-                    logger.error(f"Agent poll error: {e}")
-
-            scheduler.add_job(poll_inbox, IntervalTrigger(seconds=interval), id='inbox_watcher', replace_existing=True)
-            scheduler.add_job(poll_dispatch, IntervalTrigger(seconds=interval), id='dispatcher', replace_existing=True)
-            scheduler.add_job(poll_agents, IntervalTrigger(seconds=interval), id='tool_agents', replace_existing=True)
-
-            scheduler.start()
-            logger.info(f"APScheduler started with interval {interval}s")
-
-            app.state.scheduler = scheduler
-        except Exception as e:
-            logger.error(f"Failed to start APScheduler: {e}")
-
+        t = threading.Thread(target=_run_inbox_watcher, daemon=True, name="inbox-watcher")
+        t.start()
+        d = threading.Thread(target=_run_dispatcher, daemon=True, name="dispatcher")
+        d.start()
+        a = threading.Thread(target=_run_tool_agents, daemon=True, name="tool-agents")
+        a.start()
     yield
-
-    if hasattr(app.state, 'scheduler'):
-        app.state.scheduler.shutdown(wait=False)
 
 
 app = FastAPI(
