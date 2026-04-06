@@ -3016,7 +3016,6 @@ def _extract_upload_text(content: bytes, filename: str, max_chars: int = 8000) -
             script = (
                 "import pypdf, io, sys\n"
                 "sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')\n"
-=======
                 "try:\n"
                 f"    r = pypdf.PdfReader(open({repr(tmp)}, 'rb'))\n"
                 "    if r.is_encrypted:\n"
@@ -3034,7 +3033,6 @@ def _extract_upload_text(content: bytes, filename: str, max_chars: int = 8000) -
                 "    print('\\n'.join(text))\n"
                 "except Exception as e:\n"
                 "    print(f'ERROR: {e}', file=sys.stderr)\n"
->>>>>>> origin/main
             )
             proc = subprocess.run(
                 [sys.executable, "-c", script],
@@ -3212,8 +3210,6 @@ async def upload_document(
         *supporting_metadata,
     ]
 
-<<<<<<< HEAD
-=======
     # Smart bypass: if user explicitly selected project AND tool type (not auto)
     # we jump straight to ASSIGNED_TO_AGENT status to bypass the AI classifier dispatcher.
     has_explicit_project = bool(project_id)
@@ -3222,7 +3218,7 @@ async def upload_document(
 
     initial_status = "ASSIGNED_TO_AGENT" if bypass_classification else "PENDING_CLASSIFICATION"
 
->>>>>>> origin/main
+
     ingest_record = {
         "ingest_id": ingest_id,
         "message_id": ingest_id,
@@ -3271,19 +3267,11 @@ async def upload_document(
         "updated_at": now,
         "status_history": [{
             "from_status": None,
-<<<<<<< HEAD
-            "to_status": "PENDING_CLASSIFICATION",
-            "triggered_by": current_user.uid,
-            "trigger_type": "HUMAN",
-            "timestamp": now,
-            "notes": "Manual upload",
-=======
             "to_status": initial_status,
             "triggered_by": current_user.uid,
             "trigger_type": "HUMAN",
             "timestamp": now,
             "notes": f"Manual upload{' (bypassed classification)' if bypass_classification else ''}",
->>>>>>> origin/main
         }],
         "project_id": resolved_project_id,
         "project_number": project_number,
@@ -3346,7 +3334,6 @@ async def upload_document(
         "status": "queued",
     }
 
-<<<<<<< HEAD
 @router.get("/health")
 async def get_health():
     """Return backend health and task stats."""
@@ -3586,7 +3573,7 @@ async def search_project_chunks(
         import logging
         logging.getLogger(__name__).error(f"Search failed: {e}")
         return []
-=======
+
 
 @router.post("/admin/force-stuck-records")
 async def force_stuck_records(current_user: Annotated[UserInfo, Depends(require_auth)]):
@@ -3636,4 +3623,3 @@ async def force_stuck_records(current_user: Annotated[UserInfo, Depends(require_
     threading.Thread(target=_run_dispatcher_bg, daemon=True).start()
 
     return {"status": "success", "reset_count": count, "message": "Dispatcher triggered for stuck records."}
->>>>>>> origin/main
