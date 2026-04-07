@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -27,7 +28,26 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_EMAIL_DOMAIN = os.environ.get("ALLOWED_EMAIL_DOMAIN", "teter.com")
 GOOGLE_OAUTH_CLIENT_ID = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-SESSION_SECRET = os.environ.get("SESSION_SECRET", "dev-secret-change-in-prod")
+
+# Insecure default removed. Raise error in production; generate random in desktop mode.
+_DESKTOP_MODE = os.environ.get("DESKTOP_MODE", "").lower() in ("true", "1")
+SESSION_SECRET = os.environ.get("SESSION_SECRET")
+if not SESSION_SECRET:
+    if _DESKTOP_MODE:
+        # Generate a secure random secret for the current session.
+        # Note: This means JWTs won't persist across server restarts in desktop mode
+        # unless SESSION_SECRET is explicitly set in config.env.
+        SESSION_SECRET = secrets.token_urlsafe(32)
+        logger.warning("SESSION_SECRET not set; using a temporary random secret for desktop mode.")
+    else:
+        # We don't raise RuntimeError at import time because it might break CLI tools
+        # or tests that don't need SESSION_SECRET. Instead, we'll use a dummy value
+        # that will cause jwt.encode/decode to fail if used, or we can check it
+        # inside the create_jwt/decode_jwt functions.
+        # But wait, the requirement was "raise an error if SESSION_SECRET is not provided
+        # in a production environment".
+        SESSION_SECRET = "MISSING_IN_PRODUCTION"
+
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 8
 
@@ -38,6 +58,8 @@ JWT_EXPIRE_HOURS = 8
 
 def create_jwt(uid: str, email: str, display_name: str, role: str) -> str:
     """Issue a signed JWT valid for JWT_EXPIRE_HOURS hours."""
+    if SESSION_SECRET == "MISSING_IN_PRODUCTION":
+        raise RuntimeError("SESSION_SECRET environment variable is required in production.")
     now = datetime.now(timezone.utc)
     payload = {
         "sub": uid,
@@ -54,6 +76,8 @@ def decode_jwt(token: str) -> Optional[dict]:
     """
     Decode and verify a JWT. Returns the payload dict or None if invalid/expired.
     """
+    if SESSION_SECRET == "MISSING_IN_PRODUCTION":
+        raise RuntimeError("SESSION_SECRET environment variable is required in production.")
     try:
         return jwt.decode(token, SESSION_SECRET, algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
