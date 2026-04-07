@@ -95,9 +95,9 @@ class EmbeddingService:
                 self._primary = EmbeddingProvider(env_primary)
             except ValueError:
                 logger.warning(f"Invalid EMBEDDING_PRIMARY_PROVIDER: {env_primary}")
-                self._primary = None
+                self._primary = EmbeddingProvider.GOOGLE_VERTEX
         else:
-            self._primary = None
+            self._primary = EmbeddingProvider.GOOGLE_VERTEX
         
         # Determine fallback chain
         if fallback_providers:

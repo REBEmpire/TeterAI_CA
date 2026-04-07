@@ -232,8 +232,12 @@ export function KnowledgeGraphView() {
   // Selected node (side panel)
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null)
 
+  // Node type visibility toggles
+  const [hiddenTypes, setHiddenTypes] = useState<Set<string>>(new Set())
+
   // Graph container dimensions
   const containerRef = useRef<HTMLDivElement>(null)
+  const fgRef = useRef<any>(null)
   const [dims, setDims] = useState({ width: 800, height: 600 })
 
   // Load projects
@@ -380,6 +384,24 @@ export function KnowledgeGraphView() {
     },
     [rawData],
   )
+
+  const handleNavigateToNode = useCallback((nodeId: string) => {
+    if (!graphData || !fgRef.current) return
+    const targetNode = graphData.nodes.find(n => n.id === nodeId) as any
+    if (targetNode && typeof targetNode.x === 'number' && typeof targetNode.y === 'number') {
+      // Find the raw node data for the detail panel
+      if (rawData) {
+        const found = rawData.nodes.find(n => n.id === nodeId)
+        if (found) setSelectedNode(found)
+      }
+
+      // Center the graph on the node
+      // @ts-ignore
+      fgRef.current.centerAt(targetNode.x, targetNode.y, 1000)
+      // @ts-ignore
+      fgRef.current.zoom(2.5, 1000)
+    }
+  }, [graphData, rawData])
 
   // Link color
   const getLinkColor = useCallback((link: LinkObject) => {
@@ -630,6 +652,8 @@ export function KnowledgeGraphView() {
 
           {!loading && !error && graphData.nodes.length > 0 && (
             <ForceGraph2D
+              //@ts-ignore
+              ref={fgRef}
               graphData={graphData}
               width={dims.width}
               height={dims.height}
@@ -748,6 +772,7 @@ export function KnowledgeGraphView() {
           allNodes={rawData.nodes}
           edges={rawData.edges}
           onClose={() => setSelectedNode(null)}
+          onNavigate={handleNavigateToNode}
         />
       )}
     </div>

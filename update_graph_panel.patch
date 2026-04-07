@@ -1,0 +1,201 @@
+--- src/ui/web/src/components/graph/GraphNodeDetailPanel.tsx
++++ src/ui/web/src/components/graph/GraphNodeDetailPanel.tsx
+@@ -10,7 +10,7 @@
+
+ export interface GraphNode {
+   id: string
+-  type: 'SPEC_SECTION' | 'RFI' | 'DESIGN_FLAW' | 'CORRECTIVE_ACTION' | string
++  type: 'SPEC_SECTION' | 'RFI' | 'DESIGN_FLAW' | 'CORRECTIVE_ACTION' | 'SUBMITTAL' | 'SCHEDULEREVIEW' | 'PAYAPP' | 'COSTANALYSIS' | 'PARTY' | string
+   label: string
+   properties: Record<string, string>
+ }
+@@ -25,23 +25,34 @@
+   allNodes: GraphNode[]
+   edges: GraphEdge[]
+   onClose: () => void
++  onNavigate?: (nodeId: string) => void
+ }
+
+ const TYPE_COLORS: Record<string, string> = {
+   SPEC_SECTION:       'bg-blue-100 text-blue-800',
+   RFI:                'bg-orange-100 text-orange-800',
+   DESIGN_FLAW:        'bg-red-100 text-red-800',
+   CORRECTIVE_ACTION:  'bg-green-100 text-green-800',
++  SUBMITTAL:          'bg-purple-100 text-purple-800',
++  SCHEDULEREVIEW:     'bg-teal-100 text-teal-800',
++  PAYAPP:             'bg-yellow-100 text-yellow-800',
++  COSTANALYSIS:       'bg-indigo-100 text-indigo-800',
++  PARTY:              'bg-pink-100 text-pink-800',
+ }
+
+ const TYPE_LABELS: Record<string, string> = {
+   SPEC_SECTION:      'Spec Section',
+   RFI:               'RFI',
+   DESIGN_FLAW:       'Design Flaw',
+   CORRECTIVE_ACTION: 'Corrective Action',
++  SUBMITTAL:         'Submittal',
++  SCHEDULEREVIEW:    'Schedule Review',
++  PAYAPP:            'Pay App',
++  COSTANALYSIS:      'Cost Analysis',
++  PARTY:             'Party',
+ }
+
+ function TypeBadge({ type }: { type: string }) {
+@@ -55,7 +66,7 @@
+   )
+ }
+
+-export function GraphNodeDetailPanel({ node, allNodes, edges, onClose }: Props) {
++export function GraphNodeDetailPanel({ node, allNodes, edges, onClose, onNavigate }: Props) {
+   // Find all nodes connected to this one (either direction)
+   const connectedNodeIds = new Set<string>()
+   const connectionTypes: Record<string, string> = {}
+@@ -73,10 +84,33 @@
+
+   const connectedNodes = allNodes.filter((n) => connectedNodeIds.has(n.id))
+
+-  // Property entries to display (skip empty values)
++  // Format readable dates
++  const formatDate = (dateStr: string) => {
++    try {
++      const date = new Date(dateStr)
++      return isNaN(date.getTime()) ? dateStr : date.toLocaleDateString()
++    } catch {
++      return dateStr
++    }
++  }
++
++  // Extract source document info
++  const driveFileId = node.properties?.drive_file_id
++  const filename = node.properties?.filename
++
++  // Extract full summary
++  const summaryFull = node.properties?.summary_full || node.properties?.summary
++
++  // Property entries to display (skip empty values, summary, and internal fields)
+   const propEntries = Object.entries(node.properties).filter(
+-    ([k, v]) => v && k !== 'flaw_id' && k !== 'action_id' && k !== 'rfi_id'
++    ([k, v]) => v &&
++      k !== 'flaw_id' &&
++      k !== 'action_id' &&
++      k !== 'rfi_id' &&
++      k !== 'summary' &&
++      k !== 'summary_full' &&
++      k !== 'drive_file_id' &&
++      k !== 'filename'
+   )
++
++  const isDesktopMode = import.meta.env.VITE_DESKTOP_MODE === 'true'
++  const sourceDocHref = driveFileId && !isDesktopMode
++    ? `https://drive.google.com/file/d/${driveFileId}/view`
++    : (filename ? `file://${filename}` : undefined)
+
+   return (
+     <>
+@@ -109,6 +143,30 @@
+
+         {/* Scrollable body */}
+         <div className="flex-1 overflow-y-auto p-4 space-y-5">
++          {/* Source Document Link */}
++          {(sourceDocHref) && (
++            <section>
++              <a
++                href={sourceDocHref}
++                target="_blank"
++                rel="noopener noreferrer"
++                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-50 text-blue-700 hover:bg-blue-100 rounded text-sm font-medium transition-colors"
++              >
++                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
++                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
++                </svg>
++                View Source Document
++              </a>
++              {filename && <p className="text-xs text-teter-gray-text mt-1 ml-1">{filename}</p>}
++            </section>
++          )}
++
++          {/* Full Summary */}
++          {summaryFull && (
++            <section>
++              <h3 className="text-xs font-semibold text-teter-gray-text uppercase tracking-wider mb-2">
++                Summary
++              </h3>
++              <p className="text-sm text-teter-dark break-words leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
++                {summaryFull}
++              </p>
++            </section>
++          )}
++
+           {/* Properties */}
+           {propEntries.length > 0 && (
+             <section>
+@@ -116,13 +174,16 @@
+                 Properties
+               </h3>
+               <dl className="space-y-2">
+-                {propEntries.map(([key, value]) => (
+-                  <div key={key}>
+-                    <dt className="text-xs text-teter-gray-text capitalize">
+-                      {key.replace(/_/g, ' ')}
+-                    </dt>
+-                    <dd className="text-sm text-teter-dark break-words leading-snug">
+-                      {value}
+-                    </dd>
+-                  </div>
+-                ))}
++                {propEntries.map(([key, value]) => {
++                  const isDate = key.includes('date')
++                  const displayValue = isDate ? formatDate(value as string) : value
++                  return (
++                    <div key={key}>
++                      <dt className="text-xs text-teter-gray-text capitalize">
++                        {key.replace(/_/g, ' ')}
++                      </dt>
++                      <dd className="text-sm text-teter-dark break-words leading-snug">
++                        {displayValue as string}
++                      </dd>
++                    </div>
++                  )
++                })}
+               </dl>
+             </section>
+           )}
+@@ -135,11 +196,19 @@
+               </h3>
+               <ul className="space-y-2">
+                 {connectedNodes.map((cn) => (
+-                  <li key={cn.id} className="border border-gray-100 rounded p-2">
+-                    <div className="flex items-center gap-2 mb-1">
+-                      <TypeBadge type={cn.type} />
+-                      <span className="text-xs text-teter-gray-text">
+-                        via {connectionTypes[cn.id] ?? '—'}
+-                      </span>
++                  <li
++                    key={cn.id}
++                    className={`border border-gray-100 rounded p-2 transition-colors ${onNavigate ? 'cursor-pointer hover:bg-gray-50' : ''}`}
++                    onClick={() => onNavigate && onNavigate(cn.id)}
++                  >
++                    <div className="flex items-center justify-between mb-1">
++                      <div className="flex items-center gap-2">
++                        <TypeBadge type={cn.type} />
++                        <span className="text-xs text-teter-gray-text">
++                          via {connectionTypes[cn.id] ?? '—'}
++                        </span>
++                      </div>
++                      {onNavigate && (
++                        <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
++                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
++                        </svg>
++                      )}
+                     </div>
+                     <p className="text-sm text-teter-dark break-words leading-snug">
+                       {cn.label}
+@@ -150,7 +219,7 @@
+             </section>
+           )}
+
+-          {connectedNodes.length === 0 && propEntries.length === 0 && (
++          {connectedNodes.length === 0 && propEntries.length === 0 && !summaryFull && !sourceDocHref && (
+             <p className="text-sm text-teter-gray-text">No additional details available.</p>
+           )}
+         </div>

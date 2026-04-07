@@ -127,6 +127,7 @@ def test_ingest_project_skips_existing_doc(mock_engine, mock_drive_cls, mock_kg_
 
     kg = _make_kg_client()
     kg.document_exists.return_value = True  # already in graph
+    kg.document_is_metadata_only.return_value = False
     mock_kg_cls.return_value = kg
 
     drive = _make_drive_service(

@@ -3039,7 +3039,7 @@ def _extract_upload_text(content: bytes, filename: str, max_chars: int = 8000) -
                 capture_output=True, encoding="utf-8", errors="replace", timeout=60,
             )
             if proc.returncode != 0:
-                logger.warning(f"[upload] PDF extraction failed for {filename!r}: {proc.stderr[:200]}")
+                logger.warning(f"[upload] PDF extraction failed for {filename!r}: {proc.stderr}")
                 return ""
             text = proc.stdout
             if len(text.strip()) < 20:
@@ -3080,7 +3080,7 @@ def _extract_upload_text(content: bytes, filename: str, max_chars: int = 8000) -
                 capture_output=True, encoding="utf-8", errors="replace", timeout=30,
             )
             if proc.returncode != 0:
-                logger.warning(f"[upload] DOCX extraction failed for {filename!r}: {proc.stderr[:200]}")
+                logger.warning(f"[upload] DOCX extraction failed for {filename!r}: {proc.stderr}")
                 return ""
             return proc.stdout[:max_chars]
         except subprocess.TimeoutExpired:
@@ -3623,3 +3623,37 @@ async def force_stuck_records(current_user: Annotated[UserInfo, Depends(require_
     threading.Thread(target=_run_dispatcher_bg, daemon=True).start()
 
     return {"status": "success", "reset_count": count, "message": "Dispatcher triggered for stuck records."}
+
+@router.get("/grading/divergence-trend", tags=["grading"])
+def get_divergence_trend(current_user: Annotated[UserInfo, Depends(require_auth)]):
+    """
+    Returns average divergence scores over time.
+    """
+    from grading import get_human_grading_interface
+    interface = get_human_grading_interface()
+    # Ensure initialized
+    interface.get_next_session()
+
+    sessions = interface.storage.sessions.values()
+
+    # Simple aggregation by date (YYYY-MM-DD)
+    trends = {}
+    for session in sessions:
+        if session.status.value == "COMPLETED" and session.divergence_analysis:
+            # We want just the date part of the ISO string
+            date = session.created_at[:10]
+            score = session.divergence_analysis.overall_divergence
+            if date not in trends:
+                trends[date] = {"date": date, "sum": 0, "count": 0}
+            trends[date]["sum"] += score
+            trends[date]["count"] += 1
+
+    result = []
+    for date, data in sorted(trends.items()):
+        result.append({
+            "date": date,
+            "avg_divergence": round(data["sum"] / data["count"], 2),
+            "sessions": data["count"]
+        })
+
+    return {"trend": result}
