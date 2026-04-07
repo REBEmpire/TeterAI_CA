@@ -31,6 +31,52 @@ type ViewMode = 'list' | 'grade' | 'review' | 'report'
  * - Divergence analysis and calibration notes
  * - Aggregated divergence reports
  */
+// Helpers for Trend Line SVG
+function DivergenceTrendChart({ data }: { data: {date: string, avg_divergence: number, sessions: number}[] }) {
+  if (!data || data.length < 2) return null
+
+  const width = 400
+  const height = 120
+  const padding = { top: 20, right: 20, bottom: 20, left: 30 }
+
+  const maxDiv = Math.max(1.5, ...data.map(d => d.avg_divergence))
+
+  const getX = (index: number) => padding.left + (index / (data.length - 1)) * (width - padding.left - padding.right)
+  const getY = (val: number) => height - padding.bottom - (val / maxDiv) * (height - padding.top - padding.bottom)
+
+  const points = data.map((d, i) => `${getX(i)},${getY(d.avg_divergence)}`).join(' ')
+  const refY = getY(1.0)
+
+  return (
+    <div className="mt-6 bg-white p-4 rounded border border-gray-200 shadow-sm flex flex-col items-center">
+      <h3 className="text-sm font-semibold text-teter-dark mb-2">Divergence Trend (Avg over time)</h3>
+      <svg width={width} height={height} className="overflow-visible font-sans text-[10px]">
+        {/* Y Axis Labels */}
+        <text x={padding.left - 5} y={getY(maxDiv)} textAnchor="end" dominantBaseline="middle" fill="#9CA3AF">{maxDiv.toFixed(1)}</text>
+        <text x={padding.left - 5} y={getY(0)} textAnchor="end" dominantBaseline="middle" fill="#9CA3AF">0.0</text>
+
+        {/* Threshold Line (1.0) */}
+        <line x1={padding.left} y1={refY} x2={width - padding.right} y2={refY} stroke="#EF4444" strokeWidth="1" strokeDasharray="4 4" />
+        <text x={width - padding.right + 5} y={refY} dominantBaseline="middle" fill="#EF4444" className="font-semibold">1.0</text>
+
+        {/* X Axis Line */}
+        <line x1={padding.left} y1={height - padding.bottom} x2={width - padding.right} y2={height - padding.bottom} stroke="#E5E7EB" strokeWidth="1" />
+
+        {/* Trend Line */}
+        <polyline points={points} fill="none" stroke="#3B82F6" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+
+        {/* Data Points */}
+        {data.map((d, i) => (
+          <g key={i}>
+            <circle cx={getX(i)} cy={getY(d.avg_divergence)} r="4" fill="#3B82F6" className="cursor-pointer transition-transform hover:scale-150" />
+            <title>{`${d.date}: ${d.avg_divergence.toFixed(2)} (${d.sessions} sessions)`}</title>
+          </g>
+        ))}
+      </svg>
+    </div>
+  )
+}
+
 export function GradingView() {
   const { sessionId } = useParams<{ sessionId?: string }>()
   const navigate = useNavigate()
