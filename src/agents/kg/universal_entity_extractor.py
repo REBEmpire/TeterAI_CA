@@ -117,6 +117,20 @@ MATCH (s:SpecSection {section_number: $section_number, project_id: $project_id})
 MERGE (d)-[:REFERENCES_SPEC]->(s)
 """
 
+_BATCH_UPSERT_SPEC_SECTIONS = """
+MATCH (d)
+WHERE (d:RFI AND d.rfi_id = $task_id)
+   OR (d:Submittal AND d.task_id = $task_id)
+   OR (d:ScheduleReview AND d.task_id = $task_id)
+   OR (d:PayApp AND d.task_id = $task_id)
+   OR (d:CostAnalysis AND d.task_id = $task_id)
+WITH d
+UNWIND $sections AS section
+MERGE (s:SpecSection {section_number: section, project_id: $project_id})
+ON CREATE SET s.created_at = datetime()
+MERGE (d)-[:REFERENCES_SPEC]->(s)
+"""
+
 # For RFI: also link Party as contractor
 _UPSERT_RFI_PARTY_EDGE = """
 MATCH (r:RFI {rfi_id: $task_id})
@@ -408,21 +422,13 @@ def extract_and_store_entities(
                     party_type=entities["party_type"],
                 )
 
-            # Spec section nodes + REFERENCES_SPEC edges
-            for section in entities["spec_sections"]:
-                section = section.strip()
-                if not section:
-                    continue
+            # Spec section nodes + REFERENCES_SPEC edges (batched)
+            if entities["spec_sections"]:
                 session.run(
-                    _UPSERT_SPEC_SECTION,
-                    section_number=section,
+                    _BATCH_UPSERT_SPEC_SECTIONS,
+                    sections=[s.strip() for s in entities["spec_sections"] if s.strip()],
                     project_id=project_id,
-                )
-                session.run(
-                    _EDGE_DOC_REFERENCES_SPEC,
                     task_id=task_id,
-                    section_number=section,
-                    project_id=project_id,
                 )
 
         logger.info(f"[{task_id}] universal extractor: Neo4j upsert complete.")

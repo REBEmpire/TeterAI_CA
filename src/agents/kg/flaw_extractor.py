@@ -65,6 +65,16 @@ MATCH (s:SpecSection {section_number: $section_number, project_id: $project_id})
 MERGE (r)-[:REFERENCES_SPEC]->(s)
 """
 
+_BATCH_UPSERT_SPEC_SECTIONS = """
+MATCH (r:RFI {rfi_id: $rfi_id})
+WITH r
+UNWIND $sections AS section
+MERGE (s:SpecSection {section_number: section, project_id: $project_id})
+ON CREATE SET
+    s.created_at = datetime()
+MERGE (r)-[:REFERENCES_SPEC]->(s)
+"""
+
 
 def _parse_flaw_response(text: str) -> tuple[str, str, str]:
     """
@@ -244,20 +254,12 @@ def extract_and_store_flaw(
                 project_id=project_id,
             )
 
-            # SpecSection nodes + RFI -[REFERENCES_SPEC]-> SpecSection
-            for section in spec_sections:
-                if not section:
-                    continue
-                section_str = str(section).strip()
+            # SpecSection nodes + RFI -[REFERENCES_SPEC]-> SpecSection (batched)
+            if spec_sections:
                 session.run(
-                    _UPSERT_SPEC_SECTION_NODE,
-                    section_number=section_str,
-                    project_id=project_id,
-                )
-                session.run(
-                    _EDGE_RFI_REFERENCES_SPEC,
+                    _BATCH_UPSERT_SPEC_SECTIONS,
+                    sections=[str(s).strip() for s in spec_sections if s],
                     rfi_id=task_id,
-                    section_number=section_str,
                     project_id=project_id,
                 )
 
